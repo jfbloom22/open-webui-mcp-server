@@ -9,6 +9,7 @@ to Open WebUI.
 """
 
 import os
+from contextvars import ContextVar
 from typing import Any, Optional
 
 from fastmcp import Context, FastMCP
@@ -109,6 +110,7 @@ class ModelIdParam(BaseModel):
 
 class ModelUpdateParam(BaseModel):
     model_id: str = Field(description="Model ID")
+    base_model_id: Optional[str] = Field(default=None, description="New base model ID")
     name: Optional[str] = Field(default=None, description="New display name")
     system_prompt: Optional[str] = Field(default=None, description="New system prompt")
     temperature: Optional[float] = Field(default=None, description="New temperature")
@@ -335,7 +337,6 @@ async def get_model(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
 @mcp.tool()
 async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]:
     """Create a new custom model wrapper. ADMIN ONLY."""
-    meta = {}
     model_params = {}
     if params.system_prompt:
         model_params["system"] = params.system_prompt
@@ -345,7 +346,7 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
         model_params["max_tokens"] = params.max_tokens
     return await get_client().create_model(
         id=params.id, name=params.name, base_model_id=params.base_model_id,
-        meta=meta if meta else None, params=model_params if model_params else None,
+        meta=None, params=model_params if model_params else None,
         api_key=get_user_token()
     )
 
@@ -365,8 +366,15 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
             model_params["temperature"] = params.temperature
         if params.max_tokens is not None:
             model_params["max_tokens"] = params.max_tokens
+    if params.system_prompt is not None:
+        model_params = model_params or {}
+        model_params["system"] = params.system_prompt
     return await get_client().update_model(
-        params.model_id, params.name, None, model_params, get_user_token()
+        params.model_id,
+        name=params.name,
+        params=model_params,
+        base_model_id=params.base_model_id,
+        api_key=get_user_token(),
     )
 
 @mcp.tool()
