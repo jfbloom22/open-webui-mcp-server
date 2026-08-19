@@ -64,6 +64,7 @@ async def test_update_model_preserves_required_fields_and_merges_parameters() ->
 
     await client.update_model(
         "writing-coach",
+        base_model_id="gpt-5.6-terra",
         params={"system": "Help with writing", "temperature": 0.7},
         api_key="token",
     )
@@ -74,7 +75,7 @@ async def test_update_model_preserves_required_fields_and_merges_parameters() ->
         json={
             "id": "writing-coach",
             "name": "Writing Coach",
-            "base_model_id": "gpt-5",
+            "base_model_id": "gpt-5.6-terra",
             "meta": {"description": "Existing description"},
             "params": {"temperature": 0.7, "system": "Help with writing"},
             "access_grants": [{"type": "group", "id": "editors"}],

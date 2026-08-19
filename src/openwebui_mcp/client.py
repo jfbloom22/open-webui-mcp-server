@@ -205,6 +205,7 @@ class OpenWebUIClient:
         name: Optional[str] = None,
         meta: Optional[dict] = None,
         params: Optional[dict] = None,
+        base_model_id: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> dict:
         """Update a model while preserving fields required by the current API."""
@@ -212,7 +213,9 @@ class OpenWebUIClient:
         data = {
             "id": existing["id"],
             "name": name if name is not None else existing["name"],
-            "base_model_id": existing.get("base_model_id"),
+            "base_model_id": (
+                base_model_id if base_model_id is not None else existing.get("base_model_id")
+            ),
             "meta": {**(existing.get("meta") or {}), **(meta or {})},
             "params": {**(existing.get("params") or {}), **(params or {})},
             "access_grants": existing.get("access_grants"),

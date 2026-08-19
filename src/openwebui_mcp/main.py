@@ -109,6 +109,7 @@ class ModelIdParam(BaseModel):
 
 class ModelUpdateParam(BaseModel):
     model_id: str = Field(description="Model ID")
+    base_model_id: Optional[str] = Field(default=None, description="New base model ID")
     name: Optional[str] = Field(default=None, description="New display name")
     system_prompt: Optional[str] = Field(default=None, description="New system prompt")
     temperature: Optional[float] = Field(default=None, description="New temperature")
@@ -366,7 +367,11 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
         if params.max_tokens is not None:
             model_params["max_tokens"] = params.max_tokens
     return await get_client().update_model(
-        params.model_id, params.name, None, model_params, get_user_token()
+        params.model_id,
+        name=params.name,
+        params=model_params,
+        base_model_id=params.base_model_id,
+        api_key=get_user_token(),
     )
 
 @mcp.tool()
