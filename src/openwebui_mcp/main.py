@@ -3,38 +3,50 @@
 This MCP server exposes Open WebUI's API as MCP tools, allowing AI assistants
 to manage users, groups, models, knowledge bases, files, prompts, memories, and more.
 
-IMPORTANT: All operations use the current user's session token automatically.
-When configured with "session" auth in Open WebUI, the user's token is passed
-through, ensuring all operations respect their permissions.
+IMPORTANT: All operations use the local OPENWEBUI_API_KEY. The optional HTTP
+transport authenticates MCP clients separately and never forwards their token
+to Open WebUI.
 """
 
 import os
 from typing import Any, Optional
-from contextvars import ContextVar
 
-from fastmcp import FastMCP, Context
+from fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
 
 from .client import OpenWebUIClient
 
-# Context variable to store the current user's token
-_current_user_token: ContextVar[Optional[str]] = ContextVar("current_user_token", default=None)
-
 
 class AuthMiddleware:
-    """ASGI middleware to extract Authorization header and set context variable."""
+    """Protect the optional loopback HTTP transport with a local bearer token."""
 
-    def __init__(self, app):
+    def __init__(self, app, mcp_token: str):
         self.app = app
+        self.mcp_token = mcp_token
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
             auth_header = headers.get(b"authorization", b"").decode()
-            if auth_header.startswith("Bearer "):
-                token = auth_header[7:]
-                _current_user_token.set(token)
+            origin = headers.get(b"origin", b"").decode()
+            if origin and not origin.startswith(("http://127.0.0.1", "http://localhost")):
+                await self._reject(send, 403, "Forbidden origin")
+                return
+            if auth_header != f"Bearer {self.mcp_token}":
+                await self._reject(send, 401, "Unauthorized")
+                return
         await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _reject(send, status: int, message: str) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+            }
+        )
+        await send({"type": "http.response.body", "body": message.encode()})
 
 
 # Initialize MCP server
@@ -53,10 +65,7 @@ def get_client() -> OpenWebUIClient:
 
 
 def get_user_token() -> Optional[str]:
-    """Get the current user's token from context or environment."""
-    token = _current_user_token.get()
-    if token:
-        return token
+    """Get the Open WebUI management credential from the local environment."""
     return os.getenv("OPENWEBUI_API_KEY")
 
 
@@ -129,15 +138,16 @@ class FileContentParam(BaseModel):
 
 class PromptCreateParam(BaseModel):
     command: str = Field(description="Command trigger (e.g., '/summarize')")
-    title: str = Field(description="Prompt title")
+    name: str = Field(description="Prompt name")
     content: str = Field(description="Prompt template content")
 
 class PromptIdParam(BaseModel):
-    command: str = Field(description="Command (without leading slash)")
+    prompt_id: str = Field(description="Stable Open WebUI prompt ID")
 
 class PromptUpdateParam(BaseModel):
-    command: str = Field(description="Command (without leading slash)")
-    title: Optional[str] = Field(default=None, description="New title")
+    prompt_id: str = Field(description="Stable Open WebUI prompt ID")
+    command: Optional[str] = Field(default=None, description="New command trigger")
+    name: Optional[str] = Field(default=None, description="New prompt name")
     content: Optional[str] = Field(default=None, description="New content")
 
 class MemoryAddParam(BaseModel):
@@ -286,7 +296,9 @@ async def get_group(params: GroupIdParam, ctx: Context) -> dict[str, Any]:
 @mcp.tool()
 async def update_group(params: GroupUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update a group's name or description. ADMIN ONLY."""
-    return await get_client().update_group(params.group_id, params.name, params.description, get_user_token())
+    return await get_client().update_group(
+        params.group_id, params.name, params.description, get_user_token()
+    )
 
 @mcp.tool()
 async def add_user_to_group(params: GroupUserParam, ctx: Context) -> dict[str, Any]:
@@ -296,7 +308,9 @@ async def add_user_to_group(params: GroupUserParam, ctx: Context) -> dict[str, A
 @mcp.tool()
 async def remove_user_from_group(params: GroupUserParam, ctx: Context) -> dict[str, Any]:
     """Remove a user from a group. ADMIN ONLY."""
-    return await get_client().remove_user_from_group(params.group_id, params.user_id, get_user_token())
+    return await get_client().remove_user_from_group(
+        params.group_id, params.user_id, get_user_token()
+    )
 
 @mcp.tool()
 async def delete_group(params: GroupIdParam, ctx: Context) -> dict[str, Any]:
@@ -322,9 +336,9 @@ async def get_model(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
 async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]:
     """Create a new custom model wrapper. ADMIN ONLY."""
     meta = {}
-    if params.system_prompt:
-        meta["system"] = params.system_prompt
     model_params = {}
+    if params.system_prompt:
+        model_params["system"] = params.system_prompt
     if params.temperature is not None:
         model_params["temperature"] = params.temperature
     if params.max_tokens is not None:
@@ -338,17 +352,22 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
 @mcp.tool()
 async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update a model's name, system prompt, or parameters."""
-    meta = None
-    if params.system_prompt is not None:
-        meta = {"system": params.system_prompt}
     model_params = None
-    if params.temperature is not None or params.max_tokens is not None:
+    if (
+        params.system_prompt is not None
+        or params.temperature is not None
+        or params.max_tokens is not None
+    ):
         model_params = {}
+        if params.system_prompt is not None:
+            model_params["system"] = params.system_prompt
         if params.temperature is not None:
             model_params["temperature"] = params.temperature
         if params.max_tokens is not None:
             model_params["max_tokens"] = params.max_tokens
-    return await get_client().update_model(params.model_id, params.name, meta, model_params, get_user_token())
+    return await get_client().update_model(
+        params.model_id, params.name, None, model_params, get_user_token()
+    )
 
 @mcp.tool()
 async def delete_model(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
@@ -378,7 +397,9 @@ async def create_knowledge_base(params: KnowledgeCreateParam, ctx: Context) -> d
 @mcp.tool()
 async def update_knowledge_base(params: KnowledgeUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update a knowledge base's name or description."""
-    return await get_client().update_knowledge(params.knowledge_id, params.name, params.description, get_user_token())
+    return await get_client().update_knowledge(
+        params.knowledge_id, params.name, params.description, get_user_token()
+    )
 
 @mcp.tool()
 async def delete_knowledge_base(params: KnowledgeIdParam, ctx: Context) -> dict[str, Any]:
@@ -438,22 +459,26 @@ async def list_prompts(ctx: Context) -> dict[str, Any]:
 @mcp.tool()
 async def create_prompt(params: PromptCreateParam, ctx: Context) -> dict[str, Any]:
     """Create a new prompt template triggered by a command."""
-    return await get_client().create_prompt(params.command, params.title, params.content, get_user_token())
+    return await get_client().create_prompt(
+        params.command, params.name, params.content, get_user_token()
+    )
 
 @mcp.tool()
 async def get_prompt(params: PromptIdParam, ctx: Context) -> dict[str, Any]:
-    """Get a prompt template by its command."""
-    return await get_client().get_prompt(params.command, get_user_token())
+    """Get a prompt template by its stable ID."""
+    return await get_client().get_prompt(params.prompt_id, get_user_token())
 
 @mcp.tool()
 async def update_prompt(params: PromptUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update a prompt template."""
-    return await get_client().update_prompt(params.command, params.title, params.content, get_user_token())
+    return await get_client().update_prompt(
+        params.prompt_id, params.command, params.name, params.content, get_user_token()
+    )
 
 @mcp.tool()
 async def delete_prompt(params: PromptIdParam, ctx: Context) -> dict[str, Any]:
     """Delete a prompt template."""
-    return await get_client().delete_prompt(params.command, get_user_token())
+    return await get_client().delete_prompt(params.prompt_id, get_user_token())
 
 
 # =============================================================================
@@ -583,12 +608,16 @@ async def get_tool(params: ToolIdParam, ctx: Context) -> dict[str, Any]:
 @mcp.tool()
 async def create_tool(params: ToolCreateParam, ctx: Context) -> dict[str, Any]:
     """Create a new custom tool with Python code."""
-    return await get_client().create_tool(params.id, params.name, params.content, api_key=get_user_token())
+    return await get_client().create_tool(
+        params.id, params.name, params.content, api_key=get_user_token()
+    )
 
 @mcp.tool()
 async def update_tool(params: ToolUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update a tool's name or code."""
-    return await get_client().update_tool(params.tool_id, params.name, params.content, api_key=get_user_token())
+    return await get_client().update_tool(
+        params.tool_id, params.name, params.content, api_key=get_user_token()
+    )
 
 @mcp.tool()
 async def delete_tool(params: ToolIdParam, ctx: Context) -> dict[str, Any]:
@@ -657,7 +686,9 @@ async def get_note(params: NoteIdParam, ctx: Context) -> dict[str, Any]:
 @mcp.tool()
 async def update_note(params: NoteUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update a note's title or content."""
-    return await get_client().update_note(params.note_id, params.title, params.content, get_user_token())
+    return await get_client().update_note(
+        params.note_id, params.title, params.content, get_user_token()
+    )
 
 @mcp.tool()
 async def delete_note(params: NoteIdParam, ctx: Context) -> dict[str, Any]:
@@ -687,7 +718,9 @@ async def get_channel(params: ChannelIdParam, ctx: Context) -> dict[str, Any]:
 @mcp.tool()
 async def update_channel(params: ChannelUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update a channel's name or description."""
-    return await get_client().update_channel(params.channel_id, params.name, params.description, get_user_token())
+    return await get_client().update_channel(
+        params.channel_id, params.name, params.description, get_user_token()
+    )
 
 @mcp.tool()
 async def delete_channel(params: ChannelIdParam, ctx: Context) -> dict[str, Any]:
@@ -750,6 +783,21 @@ async def get_tool_servers(ctx: Context) -> dict[str, Any]:
 # Entry Point
 # =============================================================================
 
+def configure_tool_allowlist() -> None:
+    """Disable destructive tools and any explicitly configured extra tools."""
+    additional_disabled = {
+        name.strip()
+        for name in os.getenv("OPENWEBUI_DISABLED_TOOLS", "").split(",")
+        if name.strip()
+    }
+    registered_tools = set(mcp._tool_manager._tools)
+    disabled_tools = (
+        {name for name in registered_tools if name.startswith("delete_")}
+        | additional_disabled
+    )
+    for name in sorted(disabled_tools & registered_tools):
+        mcp.remove_tool(name)
+
 def main():
     """Run the MCP server."""
     import sys
@@ -759,15 +807,20 @@ def main():
         print("Example: export OPENWEBUI_URL=https://ai.example.com", file=sys.stderr)
         sys.exit(1)
 
+    configure_tool_allowlist()
     transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
-    host = os.getenv("MCP_HTTP_HOST", "0.0.0.0")
+    host = os.getenv("MCP_HTTP_HOST", "127.0.0.1")
     port = int(os.getenv("MCP_HTTP_PORT", "8000"))
     path = os.getenv("MCP_HTTP_PATH", "/mcp")
 
     if transport == "http":
         import uvicorn
+        mcp_token = os.getenv("MCP_HTTP_TOKEN")
+        if not mcp_token:
+            print("ERROR: MCP_HTTP_TOKEN is required for HTTP transport", file=sys.stderr)
+            sys.exit(1)
         app = mcp.http_app(path=path)
-        app = AuthMiddleware(app)
+        app = AuthMiddleware(app, mcp_token)
         print(f"Starting Open WebUI MCP server on http://{host}:{port}{path}")
         uvicorn.run(app, host=host, port=port)
     else:

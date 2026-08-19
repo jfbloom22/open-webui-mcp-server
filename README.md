@@ -14,11 +14,15 @@ An MCP (Model Context Protocol) server that exposes Open WebUI's admin APIs as t
 
 ## Security
 
-**Important**: This server passes through the user's authentication token to Open WebUI. This means:
+The normal deployment is a local stdio process. It uses `OPENWEBUI_API_KEY` from
+the local environment and is intended for a single trusted user.
 
-- Admin operations require admin API keys
-- Regular users can only access their own resources
-- All permission checks are enforced by Open WebUI's API
+- Delete tools are disabled before the server advertises its MCP tools.
+- Add further disabled tool names with `OPENWEBUI_DISABLED_TOOLS`, as a
+  comma-separated list.
+- For the optional HTTP transport, bind to loopback and set `MCP_HTTP_TOKEN`.
+  HTTP requests without that bearer token are rejected and the token is never
+  forwarded to Open WebUI.
 
 ## Installation
 
@@ -34,52 +38,42 @@ uv pip install openwebui-mcp-server
 
 ## Configuration
 
-Set the required environment variable:
+Copy the example file and set the required Open WebUI management credential:
 
 ```bash
-export OPENWEBUI_URL=https://your-openwebui-instance.com
-```
-
-Optionally, set a default API key (can be overridden per-request):
-
-```bash
-export OPENWEBUI_API_KEY=your-api-key
+cp .env.example .env
 ```
 
 ## Usage
 
-### With Claude Desktop
+### With a local MCP client
 
-Add to your Claude Desktop config (`~/.config/claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "openwebui": {
-      "command": "openwebui-mcp",
-      "env": {
-        "OPENWEBUI_URL": "https://your-openwebui-instance.com",
-        "OPENWEBUI_API_KEY": "your-api-key"
-      }
-    }
-  }
-}
-```
-
-### With Open WebUI (via MCPO)
-
-1. Start the server in HTTP mode:
+Run the server directly with a client that supports stdio, or use the local
+Podman image:
 
 ```bash
-export OPENWEBUI_URL=https://your-openwebui-instance.com
-export MCP_TRANSPORT=http
-export MCP_HTTP_PORT=8001
-openwebui-mcp
+podman build -t openwebui-mcp:local .
+podman run --interactive --rm --env-file .env openwebui-mcp:local
 ```
 
-2. Add as MCP server in Open WebUI:
-   - Go to **Admin Settings → External Tools**
-   - Add new MCP server with URL: `http://localhost:8001/mcp`
+Each local MCP client may start its own stdio container. The server has no local
+shared state, so concurrent clients can independently manage the same Open
+WebUI instance.
+
+### Optional loopback HTTP transport
+
+HTTP is reserved for a future persistent local service. Set these values in
+your local `.env` before starting it:
+
+```bash
+export MCP_TRANSPORT=http
+export MCP_HTTP_HOST=127.0.0.1
+export MCP_HTTP_PORT=8001
+export MCP_HTTP_TOKEN=generate-a-long-random-token
+```
+
+The connecting client must send `Authorization: Bearer <MCP_HTTP_TOKEN>`. Do
+not expose this endpoint beyond the local machine.
 
 ### Programmatic Usage
 
@@ -108,6 +102,10 @@ model = await client.create_model(
 ```
 
 ## Available Tools
+
+The tables below describe the local runtime's broad administrative inventory.
+It does not advertise delete tools. Use `OPENWEBUI_DISABLED_TOOLS` to exclude
+additional tools when needed.
 
 ### User Management
 | Tool | Description | Permission |

@@ -1,28 +1,23 @@
+FROM ghcr.io/astral-sh/uv:0.10.7 AS uv
+
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install uv for faster package installation
-RUN pip install uv
+COPY --from=uv /uv /uvx /bin/
 
-# Copy pyproject.toml for dependency installation
-COPY pyproject.toml .
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
 
-# Install dependencies
-RUN uv pip install --system fastmcp httpx pydantic uvicorn
+# Install locked runtime dependencies before application code for efficient rebuilds.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --locked --no-dev --no-install-project
 
 # Copy application code
 COPY src/ ./src/
+RUN uv sync --locked --no-dev
 
-# Environment variables
-ENV PYTHONUNBUFFERED=1
-ENV MCP_TRANSPORT=http
-ENV MCP_HTTP_HOST=0.0.0.0
-ENV MCP_HTTP_PORT=8000
-ENV MCP_HTTP_PATH=/mcp
-
-# Expose MCP port
-EXPOSE 8000
-
-# Run the server
-CMD ["python", "-m", "src.openwebui_mcp.main"]
+# Local MCP clients communicate over standard input/output by default.
+CMD ["openwebui-mcp"]

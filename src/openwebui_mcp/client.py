@@ -1,17 +1,14 @@
-"""Open WebUI API client with authentication passthrough.
-
-This client forwards the user's Bearer token to Open WebUI,
-ensuring all operations respect the user's permissions.
-"""
+"""Open WebUI API client using a locally configured management credential."""
 
 import os
 from typing import Any, Optional
+from urllib.parse import quote
 
 import httpx
 
 
 class OpenWebUIClient:
-    """Client for Open WebUI API with auth passthrough."""
+    """Client for the Open WebUI management API."""
 
     def __init__(
         self,
@@ -63,7 +60,8 @@ class OpenWebUIClient:
             response.raise_for_status()
 
             if response.headers.get("content-type", "").startswith("application/json"):
-                return response.json()
+                payload = response.json()
+                return payload if isinstance(payload, dict) else {"data": payload}
             return {"text": response.text}
 
     # Convenience methods
@@ -175,12 +173,12 @@ class OpenWebUIClient:
     # ==========================================================================
 
     async def list_models(self, api_key: Optional[str] = None) -> dict:
-        """List all models."""
-        return await self.get("/api/v1/models/", api_key)
+        """Export the custom model definitions managed by Open WebUI."""
+        return await self.get("/api/v1/models/export", api_key)
 
     async def get_model(self, model_id: str, api_key: Optional[str] = None) -> dict:
-        """Get a specific model."""
-        return await self.get(f"/api/v1/models/{model_id}", api_key)
+        """Get a specific custom model by ID."""
+        return await self.get(f"/api/v1/models/model?id={quote(model_id, safe='')}", api_key)
 
     async def create_model(
         self,
@@ -209,19 +207,22 @@ class OpenWebUIClient:
         params: Optional[dict] = None,
         api_key: Optional[str] = None,
     ) -> dict:
-        """Update a model."""
-        data = {}
-        if name is not None:
-            data["name"] = name
-        if meta is not None:
-            data["meta"] = meta
-        if params is not None:
-            data["params"] = params
-        return await self.post(f"/api/v1/models/{model_id}/update", api_key, json=data)
+        """Update a model while preserving fields required by the current API."""
+        existing = await self.get_model(model_id, api_key)
+        data = {
+            "id": existing["id"],
+            "name": name if name is not None else existing["name"],
+            "base_model_id": existing.get("base_model_id"),
+            "meta": {**(existing.get("meta") or {}), **(meta or {})},
+            "params": {**(existing.get("params") or {}), **(params or {})},
+            "access_grants": existing.get("access_grants"),
+            "is_active": existing.get("is_active", True),
+        }
+        return await self.post("/api/v1/models/model/update", api_key, json=data)
 
     async def delete_model(self, model_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a model (admin only)."""
-        return await self.delete(f"/api/v1/models/{model_id}", api_key)
+        return await self.post("/api/v1/models/model/delete", api_key, json={"id": model_id})
 
     # ==========================================================================
     # Knowledge Base Management
@@ -316,7 +317,7 @@ class OpenWebUIClient:
     async def create_prompt(
         self,
         command: str,
-        title: str,
+        name: str,
         content: str,
         api_key: Optional[str] = None,
     ) -> dict:
@@ -324,31 +325,39 @@ class OpenWebUIClient:
         return await self.post(
             "/api/v1/prompts/create",
             api_key,
-            json={"command": command, "title": title, "content": content},
+            json={"command": command, "name": name, "content": content},
         )
 
-    async def get_prompt(self, command: str, api_key: Optional[str] = None) -> dict:
-        """Get a prompt by command (without leading slash)."""
-        return await self.get(f"/api/v1/prompts/command/{command}", api_key)
+    async def get_prompt(self, prompt_id: str, api_key: Optional[str] = None) -> dict:
+        """Get a prompt by its stable Open WebUI ID."""
+        return await self.get(f"/api/v1/prompts/id/{quote(prompt_id, safe='')}", api_key)
 
     async def update_prompt(
         self,
-        command: str,
-        title: Optional[str] = None,
+        prompt_id: str,
+        command: Optional[str] = None,
+        name: Optional[str] = None,
         content: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> dict:
-        """Update a prompt template."""
-        data = {"command": f"/{command}"}
-        if title is not None:
-            data["title"] = title
-        if content is not None:
-            data["content"] = content
-        return await self.post(f"/api/v1/prompts/command/{command}/update", api_key, json=data)
+        """Update a prompt while preserving fields required by the current API."""
+        existing = await self.get_prompt(prompt_id, api_key)
+        data = {
+            "command": command if command is not None else existing["command"],
+            "name": name if name is not None else existing["name"],
+            "content": content if content is not None else existing["content"],
+            "data": existing.get("data"),
+            "meta": existing.get("meta"),
+            "tags": existing.get("tags"),
+            "access_grants": existing.get("access_grants"),
+        }
+        return await self.post(
+            f"/api/v1/prompts/id/{quote(prompt_id, safe='')}/update", api_key, json=data
+        )
 
-    async def delete_prompt(self, command: str, api_key: Optional[str] = None) -> dict:
+    async def delete_prompt(self, prompt_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a prompt template."""
-        return await self.delete(f"/api/v1/prompts/command/{command}/delete", api_key)
+        return await self.delete(f"/api/v1/prompts/id/{quote(prompt_id, safe='')}/delete", api_key)
 
     # ==========================================================================
     # Memory Management
