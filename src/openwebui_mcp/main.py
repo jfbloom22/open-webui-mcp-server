@@ -177,6 +177,10 @@ class ModelCreateParam(BaseModel):
     system_prompt: Optional[str] = Field(default=None, description="System prompt")
     temperature: Optional[float] = Field(default=None, description="Temperature (0.0-2.0)")
     max_tokens: Optional[int] = Field(default=None, description="Max tokens")
+    tool_ids: Optional[list[str]] = Field(default=None, description="Open WebUI tool server IDs")
+    access_grants: Optional[list[dict[str, Any]]] = Field(
+        default=None, description="Open WebUI access grants"
+    )
 
 class ModelIdParam(BaseModel):
     model_id: str = Field(description="Model ID")
@@ -188,6 +192,10 @@ class ModelUpdateParam(BaseModel):
     system_prompt: Optional[str] = Field(default=None, description="New system prompt")
     temperature: Optional[float] = Field(default=None, description="New temperature")
     max_tokens: Optional[int] = Field(default=None, description="New max tokens")
+    tool_ids: Optional[list[str]] = Field(default=None, description="Open WebUI tool server IDs")
+    access_grants: Optional[list[dict[str, Any]]] = Field(
+        default=None, description="Open WebUI access grants"
+    )
 
 class KnowledgeCreateParam(BaseModel):
     name: str = Field(description="Knowledge base name")
@@ -425,10 +433,20 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
         model_params["temperature"] = params.temperature
     if params.max_tokens is not None:
         model_params["max_tokens"] = params.max_tokens
-    return await get_client().create_model(
+    model_meta = {"toolIds": params.tool_ids} if params.tool_ids is not None else None
+    token = get_user_token()
+    result = await get_client().create_model(
         id=params.id, name=params.name, base_model_id=params.base_model_id,
-        meta=None, params=model_params if model_params else None,
-        api_key=get_user_token()
+        meta=model_meta, params=model_params if model_params else None,
+        access_grants=params.access_grants, api_key=token
+    )
+    return await audit_mutation(
+        "model.create", params.id,
+        [
+            "name", "base_model_id", "system_prompt", "temperature",
+            "max_tokens", "tool_ids", "access_grants",
+        ],
+        result, token,
     )
 
 @mcp.tool()
@@ -450,12 +468,15 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
     if params.system_prompt is not None:
         model_params = model_params or {}
         model_params["system"] = params.system_prompt
+    model_meta = {"toolIds": params.tool_ids} if params.tool_ids is not None else None
     token = get_user_token()
     result = await get_client().update_model(
         params.model_id,
         name=params.name,
         params=model_params,
+        meta=model_meta,
         base_model_id=params.base_model_id,
+        access_grants=params.access_grants,
         api_key=token,
     )
     return await audit_mutation(
@@ -469,6 +490,8 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
                 "temperature": params.temperature,
                 "max_tokens": params.max_tokens,
                 "base_model_id": params.base_model_id,
+                "tool_ids": params.tool_ids,
+                "access_grants": params.access_grants,
             }.items()
             if value is not None
         ],

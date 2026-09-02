@@ -187,6 +187,7 @@ class OpenWebUIClient:
         base_model_id: str,
         meta: Optional[dict] = None,
         params: Optional[dict] = None,
+        access_grants: Optional[list[dict]] = None,
         api_key: Optional[str] = None,
     ) -> dict:
         """Create a new model (admin only)."""
@@ -196,6 +197,7 @@ class OpenWebUIClient:
             "base_model_id": base_model_id,
             "meta": meta or {},
             "params": params or {},
+            "access_grants": access_grants,
         }
         return await self.post("/api/v1/models/create", api_key, json=data)
 
@@ -206,6 +208,7 @@ class OpenWebUIClient:
         meta: Optional[dict] = None,
         params: Optional[dict] = None,
         base_model_id: Optional[str] = None,
+        access_grants: Optional[list[dict]] = None,
         api_key: Optional[str] = None,
     ) -> dict:
         """Update a model while preserving fields required by the current API."""
@@ -221,6 +224,8 @@ class OpenWebUIClient:
             "access_grants": existing.get("access_grants"),
             "is_active": existing.get("is_active", True),
         }
+        if access_grants is not None:
+            data["access_grants"] = access_grants
         return await self.post("/api/v1/models/model/update", api_key, json=data)
 
     async def delete_model(self, model_id: str, api_key: Optional[str] = None) -> dict:
