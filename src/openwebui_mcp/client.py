@@ -291,6 +291,31 @@ class OpenWebUIClient:
         """Get extracted text content from a file."""
         return await self.get(f"/api/v1/files/{file_id}/data/content", api_key)
 
+    async def upload_text_file(
+        self, filename: str, content: str, api_key: Optional[str] = None
+    ) -> dict:
+        """Upload a UTF-8 text file and let Open WebUI process it synchronously."""
+        url = f"{self.base_url}/api/v1/files/"
+        token = api_key or self.api_key
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        files = {"file": (filename, content.encode("utf-8"), "text/markdown")}
+        data = {"process": "true", "process_in_background": "false"}
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, files=files, data=data)
+            response.raise_for_status()
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {"data": payload}
+
+    async def add_file_to_knowledge(
+        self, knowledge_id: str, file_id: str, api_key: Optional[str] = None
+    ) -> dict:
+        """Attach an already-uploaded file to a knowledge base."""
+        return await self.post(
+            f"/api/v1/knowledge/{knowledge_id}/file/add",
+            api_key,
+            json={"file_id": file_id},
+        )
+
     async def update_file_content(
         self, file_id: str, content: str, api_key: Optional[str] = None
     ) -> dict:

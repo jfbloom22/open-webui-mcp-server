@@ -80,3 +80,38 @@ async def test_request_wraps_json_lists_for_mcp_structured_content() -> None:
         result = await client.get("/api/v1/models/export")
 
     assert result == {"data": [{"id": "model-a"}]}
+
+
+@pytest.mark.asyncio
+async def test_upload_text_file_forwards_session_token_and_multipart_payload() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+
+    class Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, str]:
+            return {"id": "file-1"}
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            return Response()
+
+    fake = AsyncClient()
+    with patch("openwebui_mcp.client.httpx.AsyncClient", return_value=fake):
+        result = await client.upload_text_file("update.md", "# Update", "session-token")
+
+    assert result == {"id": "file-1"}
+    assert fake.args == ("https://webui.example/api/v1/files/",)
+    assert fake.kwargs["headers"] == {"Authorization": "Bearer session-token"}
+    assert fake.kwargs["data"] == {"process": "true", "process_in_background": "false"}
+    assert fake.kwargs["files"]["file"][0] == "update.md"
+    assert fake.kwargs["files"]["file"][1] == b"# Update"

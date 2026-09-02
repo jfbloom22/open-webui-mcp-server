@@ -8,14 +8,22 @@ transport authenticates MCP clients separately and never forwards their token
 to Open WebUI.
 """
 
+import asyncio
+import json
+import logging
 import os
 from contextvars import ContextVar
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
 
 from .client import OpenWebUIClient
+
+# Context variable to store the current user's token
+_current_user_token: ContextVar[Optional[str]] = ContextVar("current_user_token", default=None)
+logger = logging.getLogger(__name__)
 
 
 class AuthMiddleware:
@@ -53,6 +61,26 @@ class AuthMiddleware:
 # Initialize MCP server
 mcp = FastMCP("openwebui-mcp-server")
 
+MEMBER_PROFILE_TOOLS = {
+    "get_current_user",
+    "list_models",
+    "get_model",
+    "update_model",
+    "list_knowledge_bases",
+    "get_knowledge_base",
+    "create_knowledge_base",
+    "update_knowledge_base",
+    "list_files",
+    "search_files",
+    "get_file",
+    "get_file_content",
+    "add_knowledge_text",
+    "list_memories",
+    "query_memories",
+    "add_memory",
+    "update_memory",
+}
+
 # Initialize client (URL from env)
 _client: Optional[OpenWebUIClient] = None
 
@@ -66,8 +94,53 @@ def get_client() -> OpenWebUIClient:
 
 
 def get_user_token() -> Optional[str]:
-    """Get the Open WebUI management credential from the local environment."""
+    """Get the current user's token from context or environment."""
+    token = _current_user_token.get()
+    if token:
+        return token
+    profile = os.getenv("MCP_PROFILE", "local").lower()
+    if profile in {"admin", "member"}:
+        raise RuntimeError("A forwarded Open WebUI session token is required for this profile")
     return os.getenv("OPENWEBUI_API_KEY")
+
+
+async def audit_mutation(
+    action: str,
+    target: str,
+    changed_fields: list[str],
+    result: dict[str, Any],
+    api_key: Optional[str],
+) -> dict[str, Any]:
+    """Record a successful mutation without hiding the primary API result."""
+    audit = {
+        "action": action,
+        "target": target,
+        "changed_fields": changed_fields,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    logger.info("openwebui_mutation %s", json.dumps(audit, sort_keys=True))
+
+    try:
+        note = await get_client().create_note(
+            title=f"Open WebUI change: {action}",
+            content=(
+                "# Open WebUI change\n\n"
+                f"- Action: `{action}`\n"
+                f"- Target: `{target}`\n"
+                f"- Changed fields: "
+                f"{', '.join(f'`{field}`' for field in changed_fields) or 'none'}\n"
+                f"- Timestamp: `{audit['timestamp']}`\n"
+            ),
+            api_key=api_key,
+        )
+        audit["note_id"] = note.get("id")
+        audit["note_status"] = "created"
+    except Exception as exc:  # pragma: no cover - exercised through integration tests
+        audit["note_status"] = "failed"
+        audit["note_error"] = type(exc).__name__
+        logger.exception("Open WebUI mutation audit note failed for %s", action)
+
+    return {**result, "_audit": audit}
 
 
 # =============================================================================
@@ -137,6 +210,14 @@ class FileSearchParam(BaseModel):
 class FileContentParam(BaseModel):
     file_id: str = Field(description="File ID")
     content: str = Field(description="New text content")
+
+class KnowledgeTextParam(BaseModel):
+    filename: str = Field(description="Versioned .md or .txt filename")
+    content: str = Field(description="Text or Markdown content to add")
+    knowledge_id: Optional[str] = Field(
+        default=None,
+        description="Optional knowledge base ID to attach the new file to",
+    )
 
 class PromptCreateParam(BaseModel):
     command: str = Field(description="Command trigger (e.g., '/summarize')")
@@ -369,12 +450,30 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
     if params.system_prompt is not None:
         model_params = model_params or {}
         model_params["system"] = params.system_prompt
-    return await get_client().update_model(
+    token = get_user_token()
+    result = await get_client().update_model(
         params.model_id,
         name=params.name,
         params=model_params,
         base_model_id=params.base_model_id,
-        api_key=get_user_token(),
+        api_key=token,
+    )
+    return await audit_mutation(
+        "model.update",
+        params.model_id,
+        [
+            field
+            for field, value in {
+                "name": params.name,
+                "system_prompt": params.system_prompt,
+                "temperature": params.temperature,
+                "max_tokens": params.max_tokens,
+                "base_model_id": params.base_model_id,
+            }.items()
+            if value is not None
+        ],
+        result,
+        token,
     )
 
 @mcp.tool()
@@ -400,13 +499,32 @@ async def get_knowledge_base(params: KnowledgeIdParam, ctx: Context) -> dict[str
 @mcp.tool()
 async def create_knowledge_base(params: KnowledgeCreateParam, ctx: Context) -> dict[str, Any]:
     """Create a new knowledge base for RAG."""
-    return await get_client().create_knowledge(params.name, params.description, get_user_token())
+    token = get_user_token()
+    result = await get_client().create_knowledge(params.name, params.description, token)
+    return await audit_mutation(
+        "knowledge.create", params.name, ["name", "description"], result, token
+    )
 
 @mcp.tool()
 async def update_knowledge_base(params: KnowledgeUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update a knowledge base's name or description."""
-    return await get_client().update_knowledge(
-        params.knowledge_id, params.name, params.description, get_user_token()
+    token = get_user_token()
+    result = await get_client().update_knowledge(
+        params.knowledge_id, params.name, params.description, token
+    )
+    return await audit_mutation(
+        "knowledge.update",
+        params.knowledge_id,
+        [
+            field
+            for field, value in {
+                "name": params.name,
+                "description": params.description,
+            }.items()
+            if value is not None
+        ],
+        result,
+        token,
     )
 
 @mcp.tool()
@@ -438,6 +556,36 @@ async def get_file(params: FileIdParam, ctx: Context) -> dict[str, Any]:
 async def get_file_content(params: FileIdParam, ctx: Context) -> dict[str, Any]:
     """Get the extracted text content from a file."""
     return await get_client().get_file_content(params.file_id, get_user_token())
+
+@mcp.tool()
+async def add_knowledge_text(params: KnowledgeTextParam, ctx: Context) -> dict[str, Any]:
+    """Add a new Markdown or text file to your knowledge, without replacing existing files."""
+    filename = params.filename.strip()
+    if not filename.lower().endswith((".md", ".markdown", ".txt")):
+        raise ValueError("Only .md, .markdown, and .txt files may be added by this profile")
+    if not params.content.strip():
+        raise ValueError("Knowledge content must not be empty")
+    if len(params.content.encode("utf-8")) > 10 * 1024 * 1024:
+        raise ValueError("Knowledge content must be 10 MiB or smaller")
+
+    token = get_user_token()
+    uploaded = await get_client().upload_text_file(filename, params.content, token)
+    file_id = uploaded.get("id") or uploaded.get("file_id")
+    if not file_id:
+        raise RuntimeError("Open WebUI did not return an uploaded file ID")
+
+    result: dict[str, Any] = {"file": uploaded}
+    if params.knowledge_id:
+        result["knowledge"] = await get_client().add_file_to_knowledge(
+            params.knowledge_id, file_id, token
+        )
+    return await audit_mutation(
+        "knowledge.text.add",
+        params.knowledge_id or file_id,
+        ["filename", "content"] + (["knowledge_id"] if params.knowledge_id else []),
+        result,
+        token,
+    )
 
 @mcp.tool()
 async def update_file_content(params: FileContentParam, ctx: Context) -> dict[str, Any]:
@@ -501,7 +649,9 @@ async def list_memories(ctx: Context) -> dict[str, Any]:
 @mcp.tool()
 async def add_memory(params: MemoryAddParam, ctx: Context) -> dict[str, Any]:
     """Add a new memory to your memory store."""
-    return await get_client().add_memory(params.content, get_user_token())
+    token = get_user_token()
+    result = await get_client().add_memory(params.content, token)
+    return await audit_mutation("memory.add", "current-user", ["content"], result, token)
 
 @mcp.tool()
 async def query_memories(params: MemoryQueryParam, ctx: Context) -> dict[str, Any]:
@@ -511,7 +661,9 @@ async def query_memories(params: MemoryQueryParam, ctx: Context) -> dict[str, An
 @mcp.tool()
 async def update_memory(params: MemoryUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update an existing memory."""
-    return await get_client().update_memory(params.memory_id, params.content, get_user_token())
+    token = get_user_token()
+    result = await get_client().update_memory(params.memory_id, params.content, token)
+    return await audit_mutation("memory.update", params.memory_id, ["content"], result, token)
 
 @mcp.tool()
 async def delete_memory(params: MemoryIdParam, ctx: Context) -> dict[str, Any]:
@@ -806,6 +958,24 @@ def configure_tool_allowlist() -> None:
     for name in sorted(disabled_tools & registered_tools):
         mcp.remove_tool(name)
 
+async def configure_profile() -> None:
+    """Remove tools outside the selected deployed profile before serving."""
+    profile = os.getenv("MCP_PROFILE", "local").lower()
+    if profile == "local":
+        return
+    if profile not in {"admin", "member"}:
+        raise ValueError("MCP_PROFILE must be one of: local, admin, member")
+
+    registered_tools = await mcp.get_tools()
+    allowed_tools = (
+        {name for name in registered_tools if not name.startswith("delete_")}
+        if profile == "admin"
+        else MEMBER_PROFILE_TOOLS
+    )
+    for name in registered_tools:
+        if name not in allowed_tools:
+            mcp.remove_tool(name)
+
 def main():
     """Run the MCP server."""
     import sys
@@ -816,6 +986,7 @@ def main():
         sys.exit(1)
 
     configure_tool_allowlist()
+    asyncio.run(configure_profile())
     transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
     host = os.getenv("MCP_HTTP_HOST", "127.0.0.1")
     port = int(os.getenv("MCP_HTTP_PORT", "8000"))
