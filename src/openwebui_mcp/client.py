@@ -886,8 +886,8 @@ class OpenWebUIClient:
     # ==========================================================================
 
     async def get_config(self, api_key: Optional[str] = None) -> dict:
-        """Get system configuration (admin only)."""
-        return await self.get("/api/v1/configs/", api_key)
+        """Get the full system configuration (admin only)."""
+        return await self.get("/api/v1/configs/export", api_key)
 
     async def export_config(self, api_key: Optional[str] = None) -> dict:
         """Export full configuration (admin only)."""

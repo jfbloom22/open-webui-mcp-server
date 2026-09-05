@@ -59,6 +59,17 @@ async def test_get_model_uses_query_parameter_for_slash_safe_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_config_uses_current_open_webui_export_endpoint() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(return_value={"ui.banners": []})
+
+    result = await client.get_config(api_key="token")
+
+    assert result == {"ui.banners": []}
+    client.get.assert_awaited_once_with("/api/v1/configs/export", "token")
+
+
+@pytest.mark.asyncio
 async def test_update_knowledge_access_uses_open_webui_access_form() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.post = AsyncMock(return_value={"id": "knowledge-1", "name": "Research"})
