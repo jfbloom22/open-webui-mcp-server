@@ -16,6 +16,126 @@ async def test_get_model_uses_query_parameter_for_slash_safe_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_models_normalizes_user_scoped_response_and_classifies_custom_models() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(
+        side_effect=[
+            {
+                "data": [
+                    {
+                        "id": "custom-helper",
+                        "name": "Custom Helper",
+                        "owned_by": "openai",
+                        "urlIdx": 2,
+                        "is_active": False,
+                        "ignored": "field",
+                    },
+                    {
+                        "id": "ollama/llama3",
+                        "name": "Llama 3",
+                        "owned_by": "ollama",
+                        "connection_id": "ollama-prod",
+                    },
+                ]
+            },
+            [{"id": "custom-helper"}],
+        ]
+    )
+
+    result = await client.list_models(api_key="token")
+
+    assert result == {
+        "data": [
+            {
+                "id": "custom-helper",
+                "name": "Custom Helper",
+                "kind": "custom",
+                "provider": "openai",
+                "connection_id": 2,
+                "is_active": False,
+            },
+            {
+                "id": "ollama/llama3",
+                "name": "Llama 3",
+                "kind": "base",
+                "provider": "ollama",
+                "connection_id": "ollama-prod",
+                "is_active": True,
+            },
+        ]
+    }
+    assert client.get.await_args_list[0].args == ("/api/models", "token")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"kind": "custom"}, ["custom-helper"]),
+        ({"kind": "base"}, ["ollama/llama3"]),
+        ({"provider": "ollama"}, ["ollama/llama3"]),
+        ({"connection_id": "ollama-prod"}, ["ollama/llama3"]),
+        ({"query": "LLAMA"}, ["ollama/llama3"]),
+        ({"model_id": "helper"}, ["custom-helper"]),
+        ({"display_name": "custom"}, ["custom-helper"]),
+        ({"status": "inactive"}, ["custom-helper"]),
+    ],
+)
+async def test_list_models_supports_all_filters(kwargs: dict, expected: list[str]) -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(
+        side_effect=[
+            {
+                "items": [
+                    {
+                        "id": "custom-helper",
+                        "name": "Custom Helper",
+                        "provider": "openai",
+                        "is_active": False,
+                    },
+                    {
+                        "id": "ollama/llama3",
+                        "name": "Llama 3",
+                        "provider": "ollama",
+                        "connection_id": "ollama-prod",
+                    },
+                ]
+            },
+            {"items": [{"id": "custom-helper"}]},
+        ]
+    )
+
+    result = await client.list_models(api_key="token", **kwargs)
+
+    assert [item["id"] for item in result["data"]] == expected
+
+
+@pytest.mark.asyncio
+async def test_update_model_access_uses_access_endpoint_for_provider_base_and_custom_ids() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.post = AsyncMock(return_value={"ok": True})
+
+    for model_id in ("ollama/llama3", "gpt-4", "custom-helper"):
+        await client.update_model_access(
+            model_id,
+            [{"type": "group", "id": "research"}],
+            name="Model",
+            api_key="token",
+        )
+
+    assert client.post.await_count == 3
+    for call, model_id in zip(
+        client.post.await_args_list, ("ollama/llama3", "gpt-4", "custom-helper")
+    ):
+        assert call.args == ("/api/v1/models/model/access/update", "token")
+        assert call.kwargs["json"] == {
+            "id": model_id,
+            "name": "Model",
+            "access_grants": [{"type": "group", "id": "research"}],
+        }
+
+
+@pytest.mark.asyncio
 async def test_update_model_preserves_full_form_and_changes_base_model() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.get_model = AsyncMock(

@@ -8,7 +8,7 @@ List tools return compact indexes containing identifiers and discovery metadata.
 
 - **User Management**: List, get, update roles, delete users
 - **Group Management**: Create, update, add/remove members, delete groups
-- **Model Management**: Create custom models, update system prompts, manage parameters
+- **Model Management**: Discover user-scoped provider, base, and custom models; create custom models, update settings, and manage access grants
 - **Knowledge Base Management**: Create, list, update, and delete knowledge bases
 - **File Management**: Upload local files, optionally linking them to a knowledge base, and manage file content
 - **Chat Management**: List, view, delete chats
@@ -133,11 +133,22 @@ additional tools when needed.
 ### Model Management
 | Tool | Description | Permission |
 |------|-------------|------------|
-| `list_models` | List all models | Any |
+| `list_models` | List the authenticated user's effective models; filter with `kind=all`, `custom`, or `base` | Any |
 | `get_model` | Get model configuration | Any |
 | `create_model` | Create custom model | Admin |
-| `update_model` | Update model settings, description, tags, suggestions, and access grants | Admin |
+| `update_model` | Update model settings and access grants while preserving the existing model form | Admin |
+| `update_model_access` | Set grants for a custom, provider, or base model | Admin |
 | `delete_model` | Delete a model | Admin |
+
+`list_models` defaults to the authenticated user's `/api/models` response. Its
+optional filters are `kind` (`all`, `custom`, or `base`), exact `provider` and
+`connection_id`, plus substring `query`, `model_id`, `display_name`, and
+`status` (`active` or `inactive`). Custom-vs-base classification uses the
+Workspace model export, but never expands the user-scoped result set. The
+separate admin-only `update_model_access` tool accepts Open WebUI's
+`access_grants` for custom, provider, and base model IDs; `name` may be needed
+when creating a provider/base access record. It is not available in the member
+profile.
 
 ### Knowledge Base Management
 | Tool | Description | Permission |

@@ -14,7 +14,7 @@ import logging
 import os
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
@@ -192,6 +192,37 @@ class ModelCreateParam(BaseModel):
 
 class ModelIdParam(BaseModel):
     model_id: str = Field(description="Model ID")
+
+
+class ModelListParam(BaseModel):
+    kind: Literal["all", "custom", "base"] = Field(
+        default="all",
+        description="Model kind: all, custom Workspace records, or accessible base models",
+    )
+    provider: Optional[str] = Field(
+        default=None, description="Exact provider name, when identifiable"
+    )
+    connection_id: Optional[str] = Field(
+        default=None, description="Provider connection ID, when identifiable"
+    )
+    query: Optional[str] = Field(
+        default=None, description="Search model ID, display name, or provider"
+    )
+    model_id: Optional[str] = Field(default=None, description="Case-sensitive model ID substring")
+    display_name: Optional[str] = Field(
+        default=None, description="Case-insensitive display name substring"
+    )
+    status: Optional[Literal["active", "inactive"]] = Field(
+        default=None, description="Filter by active or inactive status"
+    )
+
+
+class ModelAccessParam(BaseModel):
+    model_id: str = Field(description="Custom, provider, or base model ID")
+    access_grants: list[dict[str, Any]] = Field(description="Open WebUI model access grants")
+    name: Optional[str] = Field(
+        default=None, description="Display name for a new provider/base model access record"
+    )
 
 
 class ModelUpdateParam(BaseModel):
@@ -480,9 +511,23 @@ async def delete_group(params: GroupIdParam, ctx: Context) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def list_models(ctx: Context) -> dict[str, Any]:
-    """List all available models including custom models."""
-    return await get_client().list_models(get_user_token())
+async def list_models(ctx: Context, params: Optional[ModelListParam] = None) -> dict[str, Any]:
+    """List models accessible to the current user.
+
+    Defaults to all effective models from Open WebUI. ``base`` means
+    accessible provider models, not the full administrator catalog.
+    """
+    params = params or ModelListParam()
+    return await get_client().list_models(
+        kind=params.kind,
+        provider=params.provider,
+        connection_id=params.connection_id,
+        query=params.query,
+        model_id=params.model_id,
+        display_name=params.display_name,
+        status=params.status,
+        api_key=get_user_token(),
+    )
 
 
 @mcp.tool()
@@ -584,6 +629,22 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
 async def delete_model(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
     """Delete a custom model. ADMIN ONLY."""
     return await get_client().delete_model(params.model_id, get_user_token())
+
+
+@mcp.tool()
+async def update_model_access(params: ModelAccessParam, ctx: Context) -> dict[str, Any]:
+    """Update model access grants. ADMIN ONLY.
+
+    This uses Open WebUI's minimal-record update form; omitted model fields
+    may be reset or defaulted by Open WebUI. Use ``update_model`` for settings.
+    """
+    token = get_user_token()
+    result = await get_client().update_model_access(
+        params.model_id, params.access_grants, params.name, token
+    )
+    return await audit_mutation(
+        "model.access.update", params.model_id, ["access_grants"], result, token
+    )
 
 
 # =============================================================================

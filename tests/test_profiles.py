@@ -10,6 +10,7 @@ def test_member_profile_allowlist_excludes_admin_surfaces() -> None:
     assert "add_knowledge_text" in main.MEMBER_PROFILE_TOOLS
     assert "list_users" not in main.MEMBER_PROFILE_TOOLS
     assert "get_tool_servers" not in main.MEMBER_PROFILE_TOOLS
+    assert "update_model_access" not in main.MEMBER_PROFILE_TOOLS
     assert not any(name.startswith("delete_") for name in main.MEMBER_PROFILE_TOOLS)
 
 
@@ -37,3 +38,20 @@ async def test_configure_member_profile_removes_unapproved_tools(
         await main.configure_profile()
 
     remove_tool.assert_called_once_with("delete_model")
+
+
+def test_model_tool_schemas_expose_kind_filters_and_access_grants() -> None:
+    list_schema = main.ModelListParam.model_json_schema()
+    access_schema = main.ModelAccessParam.model_json_schema()
+    update_schema = main.ModelUpdateParam.model_json_schema()
+    create_schema = main.ModelCreateParam.model_json_schema()
+
+    assert list_schema["properties"]["kind"]["default"] == "all"
+    assert list_schema["properties"]["kind"]["enum"] == ["all", "custom", "base"]
+    assert set(
+        ("provider", "connection_id", "query", "model_id", "display_name", "status")
+    ) <= set(list_schema["properties"])
+    assert "access_grants" in access_schema["properties"]
+    assert "name" in access_schema["properties"]
+    assert "access_grants" in create_schema["properties"]
+    assert "access_grants" in update_schema["properties"]

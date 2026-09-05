@@ -4,7 +4,7 @@ import json
 import mimetypes
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import quote
 
 import httpx
@@ -224,27 +224,120 @@ class OpenWebUIClient:
     # Model Management
     # ==========================================================================
 
-    async def list_models(self, api_key: Optional[str] = None) -> dict:
-        """Export the custom model definitions managed by Open WebUI."""
-        payload = await self.get("/api/v1/models/export", api_key)
+    async def list_models(
+        self,
+        kind: Literal["all", "custom", "base"] = "all",
+        provider: Optional[str] = None,
+        connection_id: Optional[str] = None,
+        query: Optional[str] = None,
+        model_id: Optional[str] = None,
+        display_name: Optional[str] = None,
+        status: Optional[Literal["active", "inactive"]] = None,
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """List the authenticated user's effective models with local filters.
 
-        def knowledge_ids(item: dict[str, Any]) -> Optional[list[str]]:
-            knowledge = (item.get("meta") or {}).get("knowledge")
-            if not isinstance(knowledge, list):
-                return None
-            return [
-                entry["id"] for entry in knowledge if isinstance(entry, dict) and entry.get("id")
-            ]
-
-        return self._compact_collection(
-            payload,
-            ("id", "name", "base_model_id", "is_active", "updated_at", "created_at"),
-            {
-                "description": lambda item: (item.get("meta") or {}).get("description"),
-                "tags": lambda item: (item.get("meta") or {}).get("tags"),
-                "knowledge_ids": knowledge_ids,
-            },
+        ``/api/models`` is intentionally the source of truth: it is scoped by
+        Open WebUI to the current user's accessible models. Export is only
+        consulted to identify Workspace custom records.
+        """
+        effective_payload = await self.get("/api/models", api_key)
+        collection_key = next(
+            (key for key in ("data", "items") if isinstance(effective_payload.get(key), list)),
+            None,
         )
+        effective_models = effective_payload.get(collection_key, []) if collection_key else []
+
+        # The export is only used as a classification index.  The records
+        # returned to callers always come from the user-scoped endpoint above.
+        export_payload = await self.get("/api/v1/models/export", api_key)
+        export_models = (
+            export_payload
+            if isinstance(export_payload, list)
+            else next(
+                (
+                    export_payload.get(key)
+                    for key in ("data", "items")
+                    if isinstance(export_payload.get(key), list)
+                ),
+                [],
+            )
+        )
+        custom_ids = {
+            item["id"]
+            for item in export_models
+            if isinstance(item, dict) and item.get("id")
+        }
+
+        models = []
+        for item in effective_models:
+            if not isinstance(item, dict):
+                continue
+            info = item.get("info") if isinstance(item.get("info"), dict) else {}
+            model_id_value = item.get("id") or info.get("id")
+            if not model_id_value:
+                continue
+            model_kind = "custom" if model_id_value in custom_ids or item.get("preset") else "base"
+            if kind != "all" and model_kind != kind:
+                continue
+            name = item.get("name") or info.get("name") or model_id_value
+            model_provider = (
+                item.get("provider")
+                or item.get("owned_by")
+                or info.get("provider")
+                or info.get("owned_by")
+            )
+            model_connection = item.get("connection_id")
+            if model_connection is None:
+                model_connection = item.get("urlIdx")
+            is_active = item.get("is_active")
+            if is_active is None:
+                is_active = info.get("is_active", True)
+            if provider and model_provider != provider:
+                continue
+            if connection_id is not None and str(model_connection) != str(connection_id):
+                continue
+            if model_id and model_id not in str(model_id_value):
+                continue
+            if display_name and display_name.casefold() not in str(name).casefold():
+                continue
+            if query:
+                haystack = f"{model_id_value} {name} {model_provider or ''}".casefold()
+                if query.casefold() not in haystack:
+                    continue
+            if status == "active" and not is_active:
+                continue
+            if status == "inactive" and is_active:
+                continue
+            compact = {
+                "id": model_id_value,
+                "name": name,
+                "kind": model_kind,
+                "is_active": bool(is_active),
+            }
+            if model_provider is not None:
+                compact["provider"] = model_provider
+            if model_connection is not None:
+                compact["connection_id"] = model_connection
+            models.append(compact)
+        return {"data": models}
+
+    async def update_model_access(
+        self,
+        model_id: str,
+        access_grants: list[dict[str, Any]],
+        name: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """Update access grants using Open WebUI's minimal model update form.
+
+        Open WebUI accepts this as a minimal-record update; omitted model
+        configuration fields may be reset or defaulted by the server.
+        """
+        data = {"id": model_id, "access_grants": access_grants}
+        if name is not None:
+            data["name"] = name
+        return await self.post("/api/v1/models/model/access/update", api_key, json=data)
 
     async def get_model(self, model_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific custom model by ID."""
