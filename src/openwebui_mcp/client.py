@@ -9,6 +9,8 @@ from urllib.parse import quote
 
 import httpx
 
+KNOWLEDGE_PAGE_SIZE = 30
+
 
 class OpenWebUIClient:
     """Client for the Open WebUI management API."""
@@ -434,11 +436,38 @@ class OpenWebUIClient:
     # ==========================================================================
 
     async def list_knowledge(self, api_key: Optional[str] = None) -> dict:
-        """List all knowledge bases."""
+        """List all knowledge bases, following Open WebUI's 30-item pages."""
+        def access_grant_count(item: dict[str, Any]) -> Optional[int]:
+            grants = item.get("access_grants", [])
+            return len(grants) if isinstance(grants, list) else None
+
+        first_page = await self.get("/api/v1/knowledge/?page=1", api_key)
+        items = first_page.get("items")
+        total = first_page.get("total")
+        if (
+            not isinstance(items, list)
+            or not isinstance(total, int)
+            or isinstance(total, bool)
+            or total < 0
+        ):
+            payload = first_page
+        else:
+            all_items = list(items)
+            page_count = (total + KNOWLEDGE_PAGE_SIZE - 1) // KNOWLEDGE_PAGE_SIZE
+            page = 2
+            while len(all_items) < total and page <= page_count:
+                next_page = await self.get(f"/api/v1/knowledge/?page={page}", api_key)
+                next_items = next_page.get("items")
+                if not isinstance(next_items, list) or not next_items:
+                    break
+                all_items.extend(next_items)
+                page += 1
+            payload = {**first_page, "items": all_items}
+
         return self._compact_collection(
-            await self.get("/api/v1/knowledge/", api_key),
+            payload,
             ("id", "name", "description", "file_count", "write_access", "created_at", "updated_at"),
-            {"access_grant_count": lambda item: len(item.get("access_grants", []))},
+            {"access_grant_count": access_grant_count},
         )
 
     async def get_knowledge(self, knowledge_id: str, api_key: Optional[str] = None) -> dict:
