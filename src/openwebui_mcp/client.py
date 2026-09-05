@@ -119,9 +119,38 @@ class OpenWebUIClient:
     # ==========================================================================
 
     async def list_users(self, api_key: Optional[str] = None) -> dict:
-        """List all users (admin only)."""
+        """List all users (admin only), following Open WebUI's pagination."""
+        first_page = await self.get("/api/v1/users/?page=1", api_key)
+        users = first_page.get("users")
+        total = first_page.get("total")
+        if not isinstance(users, list) or not isinstance(total, int):
+            return self._compact_collection(
+                first_page,
+                (
+                    "id",
+                    "email",
+                    "username",
+                    "name",
+                    "role",
+                    "last_active_at",
+                    "created_at",
+                    "group_ids",
+                ),
+            )
+
+        all_users = list(users)
+        page = 2
+        while len(all_users) < total:
+            next_page = await self.get(f"/api/v1/users/?page={page}", api_key)
+            page_users = next_page.get("users")
+            if not isinstance(page_users, list) or not page_users:
+                break
+            all_users.extend(page_users)
+            page += 1
+
+        first_page = {**first_page, "users": all_users}
         return self._compact_collection(
-            await self.get("/api/v1/users/", api_key),
+            first_page,
             (
                 "id",
                 "email",

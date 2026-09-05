@@ -6,6 +6,24 @@ from openwebui_mcp.client import OpenWebUIClient
 
 
 @pytest.mark.asyncio
+async def test_list_users_fetches_all_admin_pages() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(
+        side_effect=[
+            {"users": [{"id": f"user-{index}"} for index in range(30)], "total": 45},
+            {"users": [{"id": f"user-{index}"} for index in range(30, 45)], "total": 45},
+        ]
+    )
+
+    result = await client.list_users(api_key="token")
+
+    assert [user["id"] for user in result["users"]] == [f"user-{index}" for index in range(45)]
+    assert result["total"] == 45
+    assert client.get.await_args_list[0].args == ("/api/v1/users/?page=1", "token")
+    assert client.get.await_args_list[1].args == ("/api/v1/users/?page=2", "token")
+
+
+@pytest.mark.asyncio
 async def test_get_model_uses_query_parameter_for_slash_safe_id() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.get = AsyncMock(return_value={"id": "provider/model"})
