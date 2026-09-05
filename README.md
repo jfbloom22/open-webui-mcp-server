@@ -190,7 +190,7 @@ base, including its existing fields and files.
 |------|-------------|------------|
 | `list_tools` | List available tools | Any |
 | `list_functions` | List functions/filters | Any |
-| `get_system_config` | Get system config | Admin |
+| `get_system_config` | Get full system config via Open WebUI's `/api/v1/configs/export` endpoint | Admin |
 
 ## Development
 
