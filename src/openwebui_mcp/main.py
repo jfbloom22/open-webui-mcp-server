@@ -79,6 +79,7 @@ MEMBER_PROFILE_TOOLS = {
     "get_knowledge_base",
     "create_knowledge_base",
     "update_knowledge_base",
+    "update_knowledge_access",
     "list_files",
     "search_files",
     "get_file",
@@ -260,6 +261,11 @@ class KnowledgeUpdateParam(BaseModel):
     knowledge_id: str = Field(description="Knowledge base ID")
     name: Optional[str] = Field(default=None, description="New name")
     description: Optional[str] = Field(default=None, description="New description")
+
+
+class KnowledgeAccessParam(BaseModel):
+    knowledge_id: str = Field(description="Knowledge base ID")
+    access_grants: list[dict[str, Any]] = Field(description="Open WebUI knowledge access grants")
 
 
 class FileIdParam(BaseModel):
@@ -701,6 +707,22 @@ async def update_knowledge_base(params: KnowledgeUpdateParam, ctx: Context) -> d
             }.items()
             if value is not None
         ],
+        result,
+        token,
+    )
+
+
+@mcp.tool()
+async def update_knowledge_access(params: KnowledgeAccessParam, ctx: Context) -> dict[str, Any]:
+    """Update access grants for a knowledge base."""
+    token = get_user_token()
+    result = await get_client().update_knowledge_access(
+        params.knowledge_id, params.access_grants, token
+    )
+    return await audit_mutation(
+        "knowledge.access.update",
+        params.knowledge_id,
+        ["access_grants"],
         result,
         token,
     )

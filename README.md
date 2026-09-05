@@ -9,7 +9,7 @@ List tools return compact indexes containing identifiers and discovery metadata.
 - **User Management**: List, get, update roles, delete users
 - **Group Management**: Create, update, add/remove members, delete groups
 - **Model Management**: Discover user-scoped provider, base, and custom models; create custom models, update settings, and manage access grants
-- **Knowledge Base Management**: Create, list, update, and delete knowledge bases
+- **Knowledge Base Management**: Create, list, update, share, and delete knowledge bases
 - **File Management**: Upload local files, optionally linking them to a knowledge base, and manage file content
 - **Chat Management**: List, view, delete chats
 - **Tool & Function Discovery**: List available tools and functions
@@ -157,7 +157,15 @@ profile.
 | `get_knowledge_base` | Get knowledge base details | Any |
 | `create_knowledge_base` | Create knowledge base | Any |
 | `update_knowledge_base` | Update knowledge base name/description | Owner |
+| `update_knowledge_access` | Replace knowledge base access grants | Owner, write access, or admin |
 | `delete_knowledge_base` | Delete knowledge base | Owner |
+
+`update_knowledge_access` sends Open WebUI's exact access form,
+`{"access_grants": [...]}`, to the dedicated knowledge access endpoint. Grant
+entries use Open WebUI's native shape, such as
+`{"principal_type": "group", "principal_id": "group-id", "permission": "read"}`. Open WebUI
+applies the instance's sharing permissions and returns the updated knowledge
+base, including its existing fields and files.
 
 ### File Management
 | Tool | Description | Permission |

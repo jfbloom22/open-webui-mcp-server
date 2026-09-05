@@ -34,6 +34,22 @@ async def test_get_model_uses_query_parameter_for_slash_safe_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_knowledge_access_uses_open_webui_access_form() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.post = AsyncMock(return_value={"id": "knowledge-1", "name": "Research"})
+    grants = [{"principal_type": "group", "principal_id": "research", "permission": "write"}]
+
+    result = await client.update_knowledge_access("knowledge-1", grants, "token")
+
+    assert result == {"id": "knowledge-1", "name": "Research"}
+    client.post.assert_awaited_once_with(
+        "/api/v1/knowledge/knowledge-1/access/update",
+        "token",
+        json={"access_grants": grants},
+    )
+
+
+@pytest.mark.asyncio
 async def test_request_wraps_json_lists_for_mcp_structured_content() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
 

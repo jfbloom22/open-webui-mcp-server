@@ -473,6 +473,19 @@ class OpenWebUIClient:
             data["description"] = description
         return await self.post(f"/api/v1/knowledge/{knowledge_id}/update", api_key, json=data)
 
+    async def update_knowledge_access(
+        self,
+        knowledge_id: str,
+        access_grants: list[dict[str, Any]],
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """Update knowledge-base access grants using Open WebUI's access form."""
+        return await self.post(
+            f"/api/v1/knowledge/{knowledge_id}/access/update",
+            api_key,
+            json={"access_grants": access_grants},
+        )
+
     async def delete_knowledge(self, knowledge_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a knowledge base."""
         return await self.delete(f"/api/v1/knowledge/{knowledge_id}", api_key)
