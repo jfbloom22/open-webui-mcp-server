@@ -25,6 +25,28 @@ def test_deployed_profiles_require_forwarded_session_token(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
+async def test_http_middleware_forwards_session_token_for_scoped_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MCP_PROFILE", "admin")
+    observed: list[str | None] = []
+
+    async def app(scope, receive, send):
+        observed.append(main.get_user_token())
+
+    middleware = main.AuthMiddleware(app)
+    await middleware(
+        {"type": "http", "headers": [(b"authorization", b"Bearer session-token")]},
+        Mock(),
+        Mock(),
+    )
+
+    assert observed == ["session-token"]
+    with pytest.raises(RuntimeError, match="forwarded Open WebUI session token"):
+        main.get_user_token()
+
+
+@pytest.mark.asyncio
 async def test_configure_member_profile_removes_unapproved_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

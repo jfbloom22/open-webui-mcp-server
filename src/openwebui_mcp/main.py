@@ -3,9 +3,8 @@
 This MCP server exposes Open WebUI's API as MCP tools, allowing AI assistants
 to manage users, groups, models, knowledge bases, files, prompts, memories, and more.
 
-IMPORTANT: All operations use the local OPENWEBUI_API_KEY. The optional HTTP
-transport authenticates MCP clients separately and never forwards their token
-to Open WebUI.
+IMPORTANT: Local stdio operations use OPENWEBUI_API_KEY. Scoped HTTP profiles
+use the authenticated Open WebUI bearer token forwarded by Open WebUI.
 """
 
 import asyncio
@@ -27,13 +26,14 @@ logger = logging.getLogger(__name__)
 
 
 class AuthMiddleware:
-    """Protect the optional loopback HTTP transport with a local bearer token."""
+    """Authenticate HTTP transport and scope Open WebUI calls to its user."""
 
     def __init__(self, app, mcp_token: Optional[str] = None):
         self.app = app
         self.mcp_token = mcp_token
 
     async def __call__(self, scope, receive, send):
+        context_token = None
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
             auth_header = headers.get(b"authorization", b"").decode()
@@ -44,7 +44,16 @@ class AuthMiddleware:
             if self.mcp_token and auth_header != f"Bearer {self.mcp_token}":
                 await self._reject(send, 401, "Unauthorized")
                 return
-        await self.app(scope, receive, send)
+            profile = os.getenv("MCP_PROFILE", "local").lower()
+            if profile in {"admin", "member"} and auth_header.lower().startswith("bearer "):
+                forwarded_token = auth_header[7:].strip()
+                if forwarded_token and forwarded_token != self.mcp_token:
+                    context_token = _current_user_token.set(forwarded_token)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if context_token is not None:
+                _current_user_token.reset(context_token)
 
     @staticmethod
     async def _reject(send, status: int, message: str) -> None:
