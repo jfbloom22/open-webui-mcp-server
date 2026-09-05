@@ -167,6 +167,12 @@ entries use Open WebUI's native shape, such as
 applies the instance's sharing permissions and returns the updated knowledge
 base, including its existing fields and files.
 
+File search passes `filename` as an HTTP query parameter, preserving spaces,
+ampersands, hashes, wildcards, and Unicode in the pattern. Resource IDs in URL
+paths are percent-encoded as individual path segments. Focused tests cover the
+current Open WebUI routes for group, knowledge-base, tool, function, folder,
+and chat mutations.
+
 ### File Management
 | Tool | Description | Permission |
 |------|-------------|------------|
