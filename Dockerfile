@@ -8,8 +8,8 @@ ARG CREATED=unknown
 
 WORKDIR /app
 
- # Install curl for the healthcheck and create a non-root runtime user.
- RUN apt-get update \
+# Install curl for the healthcheck and create a non-root runtime user.
+RUN apt-get update \
      && apt-get install -y --no-install-recommends curl \
      && rm -rf /var/lib/apt/lists/* \
      && useradd --uid 65532 --create-home --home-dir /home/openwebui-mcp --shell /usr/sbin/nologin openwebui-mcp
@@ -35,7 +35,6 @@ LABEL org.opencontainers.image.source="https://github.com/jfbloom22/open-webui-m
       org.opencontainers.image.created="${CREATED}"
 
 # Environment variables
-ENV PYTHONUNBUFFERED=1
 # Codex launches the local MCP server over stdio. Override this at runtime
 # with MCP_TRANSPORT=http when an HTTP deployment is explicitly required.
 ENV MCP_TRANSPORT=stdio
