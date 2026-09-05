@@ -482,15 +482,34 @@ class OpenWebUIClient:
     # ==========================================================================
 
     async def list_files(self, api_key: Optional[str] = None) -> dict:
-        """List all files."""
+        """List all files as lightweight metadata, including every page."""
 
         def knowledge_id(item: dict[str, Any]) -> Optional[str]:
             meta = item.get("meta") or {}
             data = meta.get("data") if isinstance(meta, dict) else None
             return data.get("knowledge_id") if isinstance(data, dict) else None
 
+        first_page = await self.get("/api/v1/files/?page=1&content=false", api_key)
+        items = first_page.get("items")
+        total = first_page.get("total")
+        if isinstance(items, list) and isinstance(total, int):
+            all_items = list(items)
+            page = 2
+            while len(all_items) < total:
+                next_page = await self.get(
+                    f"/api/v1/files/?page={page}&content=false", api_key
+                )
+                next_items = next_page.get("items")
+                if not isinstance(next_items, list) or not next_items:
+                    break
+                all_items.extend(next_items)
+                page += 1
+            payload = {**first_page, "items": all_items}
+        else:
+            payload = first_page
+
         return self._compact_collection(
-            await self.get("/api/v1/files/", api_key),
+            payload,
             ("id", "filename", "user_id", "hash", "created_at", "updated_at"),
             {"knowledge_id": knowledge_id},
         )

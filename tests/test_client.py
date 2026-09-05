@@ -24,6 +24,31 @@ async def test_list_users_fetches_all_admin_pages() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_files_fetches_all_pages_without_content() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(
+        side_effect=[
+            {
+                "items": [
+                    {"id": f"file-{index}", "data": {"content": "extracted text"}}
+                    for index in range(50)
+                ],
+                "total": 55,
+            },
+            {"items": [{"id": f"file-{index}"} for index in range(50, 55)], "total": 55},
+        ]
+    )
+
+    result = await client.list_files(api_key="token")
+
+    assert [file["id"] for file in result["items"]] == [f"file-{index}" for index in range(55)]
+    assert all("data" not in file for file in result["items"])
+    assert result["total"] == 55
+    assert client.get.await_args_list[0].args == ("/api/v1/files/?page=1&content=false", "token")
+    assert client.get.await_args_list[1].args == ("/api/v1/files/?page=2&content=false", "token")
+
+
+@pytest.mark.asyncio
 async def test_get_model_uses_query_parameter_for_slash_safe_id() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.get = AsyncMock(return_value={"id": "provider/model"})
