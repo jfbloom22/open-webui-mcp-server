@@ -42,6 +42,11 @@ class OpenWebUIClient:
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
+    @staticmethod
+    def _path_id(value: str) -> str:
+        """Encode a value used as one URL path segment."""
+        return quote(value, safe="")
+
     async def request(
         self,
         method: str,
@@ -167,7 +172,7 @@ class OpenWebUIClient:
 
     async def get_user(self, user_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific user."""
-        return await self.get(f"/api/v1/users/{user_id}", api_key)
+        return await self.get(f"/api/v1/users/{self._path_id(user_id)}", api_key)
 
     async def get_current_user(self, api_key: Optional[str] = None) -> dict:
         """Get the currently authenticated user."""
@@ -178,14 +183,14 @@ class OpenWebUIClient:
     ) -> dict:
         """Update a user's role (admin only)."""
         return await self.post(
-            f"/api/v1/users/{user_id}/update/role",
+            f"/api/v1/users/{self._path_id(user_id)}/update/role",
             api_key,
             json={"role": role},
         )
 
     async def delete_user(self, user_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a user (admin only)."""
-        return await self.delete(f"/api/v1/users/{user_id}", api_key)
+        return await self.delete(f"/api/v1/users/{self._path_id(user_id)}", api_key)
 
     # ==========================================================================
     # Group Management
@@ -210,7 +215,7 @@ class OpenWebUIClient:
 
     async def get_group(self, group_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific group."""
-        return await self.get(f"/api/v1/groups/id/{group_id}", api_key)
+        return await self.get(f"/api/v1/groups/id/{self._path_id(group_id)}", api_key)
 
     async def update_group(
         self,
@@ -225,14 +230,16 @@ class OpenWebUIClient:
             data["name"] = name
         if description is not None:
             data["description"] = description
-        return await self.post(f"/api/v1/groups/id/{group_id}/update", api_key, json=data)
+        return await self.post(
+            f"/api/v1/groups/id/{self._path_id(group_id)}/update", api_key, json=data
+        )
 
     async def add_user_to_group(
         self, group_id: str, user_id: str, api_key: Optional[str] = None
     ) -> dict:
         """Add a user to a group (admin only)."""
         return await self.post(
-            f"/api/v1/groups/id/{group_id}/users/add",
+            f"/api/v1/groups/id/{self._path_id(group_id)}/users/add",
             api_key,
             json={"user_ids": [user_id]},
         )
@@ -242,14 +249,14 @@ class OpenWebUIClient:
     ) -> dict:
         """Remove a user from a group (admin only)."""
         return await self.post(
-            f"/api/v1/groups/id/{group_id}/users/remove",
+            f"/api/v1/groups/id/{self._path_id(group_id)}/users/remove",
             api_key,
             json={"user_id": user_id},
         )
 
     async def delete_group(self, group_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a group (admin only)."""
-        return await self.delete(f"/api/v1/groups/id/{group_id}", api_key)
+        return await self.delete(f"/api/v1/groups/id/{self._path_id(group_id)}/delete", api_key)
 
     # ==========================================================================
     # Model Management
@@ -472,7 +479,7 @@ class OpenWebUIClient:
 
     async def get_knowledge(self, knowledge_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific knowledge base."""
-        return await self.get(f"/api/v1/knowledge/{knowledge_id}", api_key)
+        return await self.get(f"/api/v1/knowledge/{self._path_id(knowledge_id)}", api_key)
 
     async def create_knowledge(
         self,
@@ -500,7 +507,9 @@ class OpenWebUIClient:
             data["name"] = name
         if description is not None:
             data["description"] = description
-        return await self.post(f"/api/v1/knowledge/{knowledge_id}/update", api_key, json=data)
+        return await self.post(
+            f"/api/v1/knowledge/{self._path_id(knowledge_id)}/update", api_key, json=data
+        )
 
     async def update_knowledge_access(
         self,
@@ -510,14 +519,14 @@ class OpenWebUIClient:
     ) -> dict:
         """Update knowledge-base access grants using Open WebUI's access form."""
         return await self.post(
-            f"/api/v1/knowledge/{knowledge_id}/access/update",
+            f"/api/v1/knowledge/{self._path_id(knowledge_id)}/access/update",
             api_key,
             json={"access_grants": access_grants},
         )
 
     async def delete_knowledge(self, knowledge_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a knowledge base."""
-        return await self.delete(f"/api/v1/knowledge/{knowledge_id}", api_key)
+        return await self.delete(f"/api/v1/knowledge/{self._path_id(knowledge_id)}/delete", api_key)
 
     # ==========================================================================
     # File Management
@@ -598,15 +607,15 @@ class OpenWebUIClient:
 
     async def search_files(self, filename: str, api_key: Optional[str] = None) -> dict:
         """Search files by filename pattern (supports wildcards)."""
-        return await self.get(f"/api/v1/files/search?filename={filename}", api_key)
+        return await self.get("/api/v1/files/search", api_key, params={"filename": filename})
 
     async def get_file(self, file_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific file's metadata."""
-        return await self.get(f"/api/v1/files/{file_id}", api_key)
+        return await self.get(f"/api/v1/files/{self._path_id(file_id)}", api_key)
 
     async def get_file_content(self, file_id: str, api_key: Optional[str] = None) -> dict:
         """Get extracted text content from a file."""
-        return await self.get(f"/api/v1/files/{file_id}/data/content", api_key)
+        return await self.get(f"/api/v1/files/{self._path_id(file_id)}/data/content", api_key)
 
     async def upload_text_file(
         self, filename: str, content: str, api_key: Optional[str] = None
@@ -628,7 +637,7 @@ class OpenWebUIClient:
     ) -> dict:
         """Attach an already-uploaded file to a knowledge base."""
         return await self.post(
-            f"/api/v1/knowledge/{knowledge_id}/file/add",
+            f"/api/v1/knowledge/{self._path_id(knowledge_id)}/file/add",
             api_key,
             json={"file_id": file_id},
         )
@@ -638,14 +647,14 @@ class OpenWebUIClient:
     ) -> dict:
         """Update the extracted content of a file."""
         return await self.post(
-            f"/api/v1/files/{file_id}/data/content/update",
+            f"/api/v1/files/{self._path_id(file_id)}/data/content/update",
             api_key,
             json={"content": content},
         )
 
     async def delete_file(self, file_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a file."""
-        return await self.delete(f"/api/v1/files/{file_id}", api_key)
+        return await self.delete(f"/api/v1/files/{self._path_id(file_id)}", api_key)
 
     async def delete_all_files(self, api_key: Optional[str] = None) -> dict:
         """Delete all files (admin only)."""
@@ -728,12 +737,14 @@ class OpenWebUIClient:
     ) -> dict:
         """Update a memory."""
         return await self.post(
-            f"/api/v1/memories/{memory_id}/update", api_key, json={"content": content}
+            f"/api/v1/memories/{self._path_id(memory_id)}/update",
+            api_key,
+            json={"content": content},
         )
 
     async def delete_memory(self, memory_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a memory."""
-        return await self.delete(f"/api/v1/memories/{memory_id}", api_key)
+        return await self.delete(f"/api/v1/memories/{self._path_id(memory_id)}", api_key)
 
     async def delete_all_memories(self, api_key: Optional[str] = None) -> dict:
         """Delete all user memories."""
@@ -756,11 +767,11 @@ class OpenWebUIClient:
 
     async def get_chat(self, chat_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific chat."""
-        return await self.get(f"/api/v1/chats/{chat_id}", api_key)
+        return await self.get(f"/api/v1/chats/{self._path_id(chat_id)}", api_key)
 
     async def delete_chat(self, chat_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a chat."""
-        return await self.delete(f"/api/v1/chats/{chat_id}", api_key)
+        return await self.delete(f"/api/v1/chats/{self._path_id(chat_id)}", api_key)
 
     async def delete_all_chats(self, api_key: Optional[str] = None) -> dict:
         """Delete all user's chats."""
@@ -768,15 +779,15 @@ class OpenWebUIClient:
 
     async def archive_chat(self, chat_id: str, api_key: Optional[str] = None) -> dict:
         """Archive a chat."""
-        return await self.get(f"/api/v1/chats/{chat_id}/archive", api_key)
+        return await self.post(f"/api/v1/chats/{self._path_id(chat_id)}/archive", api_key)
 
     async def share_chat(self, chat_id: str, api_key: Optional[str] = None) -> dict:
         """Share a chat (make public)."""
-        return await self.post(f"/api/v1/chats/{chat_id}/share", api_key)
+        return await self.post(f"/api/v1/chats/{self._path_id(chat_id)}/share", api_key)
 
     async def clone_chat(self, chat_id: str, api_key: Optional[str] = None) -> dict:
         """Clone a shared chat."""
-        return await self.get(f"/api/v1/chats/{chat_id}/clone", api_key)
+        return await self.post(f"/api/v1/chats/{self._path_id(chat_id)}/clone", api_key)
 
     # ==========================================================================
     # Folder Management
@@ -788,19 +799,21 @@ class OpenWebUIClient:
 
     async def create_folder(self, name: str, api_key: Optional[str] = None) -> dict:
         """Create a new folder."""
-        return await self.post("/api/v1/folders/create", api_key, json={"name": name})
+        return await self.post("/api/v1/folders/", api_key, json={"name": name})
 
     async def get_folder(self, folder_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific folder."""
-        return await self.get(f"/api/v1/folders/{folder_id}", api_key)
+        return await self.get(f"/api/v1/folders/{self._path_id(folder_id)}", api_key)
 
     async def update_folder(self, folder_id: str, name: str, api_key: Optional[str] = None) -> dict:
         """Update a folder's name."""
-        return await self.post(f"/api/v1/folders/{folder_id}/update", api_key, json={"name": name})
+        return await self.post(
+            f"/api/v1/folders/{self._path_id(folder_id)}/update", api_key, json={"name": name}
+        )
 
     async def delete_folder(self, folder_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a folder."""
-        return await self.delete(f"/api/v1/folders/{folder_id}", api_key)
+        return await self.delete(f"/api/v1/folders/{self._path_id(folder_id)}", api_key)
 
     # ==========================================================================
     # Tool Management
@@ -816,7 +829,7 @@ class OpenWebUIClient:
 
     async def get_tool(self, tool_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific tool."""
-        return await self.get(f"/api/v1/tools/id/{tool_id}", api_key)
+        return await self.get(f"/api/v1/tools/id/{self._path_id(tool_id)}", api_key)
 
     async def create_tool(
         self,
@@ -848,11 +861,13 @@ class OpenWebUIClient:
             data["content"] = content
         if meta is not None:
             data["meta"] = meta
-        return await self.post(f"/api/v1/tools/id/{tool_id}/update", api_key, json=data)
+        return await self.post(
+            f"/api/v1/tools/id/{self._path_id(tool_id)}/update", api_key, json=data
+        )
 
     async def delete_tool(self, tool_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a tool."""
-        return await self.delete(f"/api/v1/tools/id/{tool_id}", api_key)
+        return await self.delete(f"/api/v1/tools/id/{self._path_id(tool_id)}/delete", api_key)
 
     # ==========================================================================
     # Function Management
@@ -867,7 +882,7 @@ class OpenWebUIClient:
 
     async def get_function(self, function_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific function."""
-        return await self.get(f"/api/v1/functions/id/{function_id}", api_key)
+        return await self.get(f"/api/v1/functions/id/{self._path_id(function_id)}", api_key)
 
     async def create_function(
         self,
@@ -900,15 +915,19 @@ class OpenWebUIClient:
             data["content"] = content
         if meta is not None:
             data["meta"] = meta
-        return await self.post(f"/api/v1/functions/id/{function_id}/update", api_key, json=data)
+        return await self.post(
+            f"/api/v1/functions/id/{self._path_id(function_id)}/update", api_key, json=data
+        )
 
     async def toggle_function(self, function_id: str, api_key: Optional[str] = None) -> dict:
         """Toggle a function's enabled state."""
-        return await self.post(f"/api/v1/functions/id/{function_id}/toggle", api_key)
+        return await self.post(f"/api/v1/functions/id/{self._path_id(function_id)}/toggle", api_key)
 
     async def delete_function(self, function_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a function."""
-        return await self.delete(f"/api/v1/functions/id/{function_id}", api_key)
+        return await self.delete(
+            f"/api/v1/functions/id/{self._path_id(function_id)}/delete", api_key
+        )
 
     # ==========================================================================
     # Config/Settings (Admin)
@@ -990,7 +1009,7 @@ class OpenWebUIClient:
 
     async def get_note(self, note_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific note."""
-        return await self.get(f"/api/v1/notes/{note_id}", api_key)
+        return await self.get(f"/api/v1/notes/{self._path_id(note_id)}", api_key)
 
     async def update_note(
         self,
@@ -1005,11 +1024,11 @@ class OpenWebUIClient:
             data["title"] = title
         if content is not None:
             data["content"] = content
-        return await self.post(f"/api/v1/notes/{note_id}/update", api_key, json=data)
+        return await self.post(f"/api/v1/notes/{self._path_id(note_id)}/update", api_key, json=data)
 
     async def delete_note(self, note_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a note."""
-        return await self.delete(f"/api/v1/notes/{note_id}/delete", api_key)
+        return await self.delete(f"/api/v1/notes/{self._path_id(note_id)}/delete", api_key)
 
     # ==========================================================================
     # Channels (Team Chat) Management
@@ -1048,7 +1067,7 @@ class OpenWebUIClient:
 
     async def get_channel(self, channel_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific channel."""
-        return await self.get(f"/api/v1/channels/{channel_id}", api_key)
+        return await self.get(f"/api/v1/channels/{self._path_id(channel_id)}", api_key)
 
     async def update_channel(
         self,
@@ -1063,11 +1082,13 @@ class OpenWebUIClient:
             data["name"] = name
         if description is not None:
             data["description"] = description
-        return await self.post(f"/api/v1/channels/{channel_id}/update", api_key, json=data)
+        return await self.post(
+            f"/api/v1/channels/{self._path_id(channel_id)}/update", api_key, json=data
+        )
 
     async def delete_channel(self, channel_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a channel (admin only)."""
-        return await self.delete(f"/api/v1/channels/{channel_id}/delete", api_key)
+        return await self.delete(f"/api/v1/channels/{self._path_id(channel_id)}/delete", api_key)
 
     async def get_channel_messages(
         self,
@@ -1078,7 +1099,7 @@ class OpenWebUIClient:
     ) -> dict:
         """Get messages from a channel."""
         return await self.get(
-            f"/api/v1/channels/{channel_id}/messages?skip={skip}&limit={limit}",
+            f"/api/v1/channels/{self._path_id(channel_id)}/messages?skip={skip}&limit={limit}",
             api_key,
         )
 
@@ -1094,7 +1115,7 @@ class OpenWebUIClient:
         if parent_id:
             data["parent_id"] = parent_id
         return await self.post(
-            f"/api/v1/channels/{channel_id}/messages/post",
+            f"/api/v1/channels/{self._path_id(channel_id)}/messages/post",
             api_key,
             json=data,
         )
@@ -1107,6 +1128,7 @@ class OpenWebUIClient:
     ) -> dict:
         """Delete a message from a channel."""
         return await self.delete(
-            f"/api/v1/channels/{channel_id}/messages/{message_id}/delete",
+            f"/api/v1/channels/{self._path_id(channel_id)}/messages/"
+            f"{self._path_id(message_id)}/delete",
             api_key,
         )

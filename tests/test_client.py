@@ -148,6 +148,60 @@ async def test_get_config_uses_current_open_webui_export_endpoint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_files_passes_filename_as_encoded_query_parameter() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(return_value={"data": []})
+
+    await client.search_files("quarterly report & notes/*.pdf", "token")
+
+    client.get.assert_awaited_once_with(
+        "/api/v1/files/search",
+        "token",
+        params={"filename": "quarterly report & notes/*.pdf"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_and_knowledge_ids_are_encoded_as_path_segments() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(return_value={})
+    client.delete = AsyncMock(return_value={})
+
+    await client.get_file("folder/file id")
+    await client.delete_knowledge("tenant/knowledge id")
+
+    assert client.get.await_args.args == ("/api/v1/files/folder%2Ffile%20id", None)
+    client.delete.assert_awaited_once_with(
+        "/api/v1/knowledge/tenant%2Fknowledge%20id/delete", None
+    )
+
+
+@pytest.mark.asyncio
+async def test_mutation_routes_match_current_open_webui_source() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.delete = AsyncMock(return_value={})
+    client.post = AsyncMock(return_value={})
+
+    await client.delete_group("group-1", "token")
+    await client.delete_tool("tool-1", "token")
+    await client.delete_function("function-1", "token")
+    await client.create_folder("Research", "token")
+    await client.archive_chat("chat-1", "token")
+    await client.clone_chat("chat-1", "token")
+
+    assert [call.args for call in client.delete.await_args_list] == [
+        ("/api/v1/groups/id/group-1/delete", "token"),
+        ("/api/v1/tools/id/tool-1/delete", "token"),
+        ("/api/v1/functions/id/function-1/delete", "token"),
+    ]
+    assert [call.args for call in client.post.await_args_list] == [
+        ("/api/v1/folders/", "token"),
+        ("/api/v1/chats/chat-1/archive", "token"),
+        ("/api/v1/chats/chat-1/clone", "token"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_update_knowledge_access_uses_open_webui_access_form() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.post = AsyncMock(return_value={"id": "knowledge-1", "name": "Research"})
