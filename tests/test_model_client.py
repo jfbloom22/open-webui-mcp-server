@@ -38,7 +38,7 @@ async def test_list_models_normalizes_user_scoped_response_and_classifies_custom
                     },
                 ]
             },
-            [{"id": "custom-helper"}],
+            {"items": [{"id": "custom-helper"}], "total": 1},
         ]
     )
 
@@ -64,7 +64,10 @@ async def test_list_models_normalizes_user_scoped_response_and_classifies_custom
             },
         ]
     }
-    assert client.get.await_args_list[0].args == ("/api/models", "token")
+    assert [call.args for call in client.get.await_args_list] == [
+        ("/api/models", "token"),
+        ("/api/v1/models/list?page=1", "token"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -101,7 +104,7 @@ async def test_list_models_supports_all_filters(kwargs: dict, expected: list[str
                     },
                 ]
             },
-            {"items": [{"id": "custom-helper"}]},
+            {"items": [{"id": "custom-helper"}], "total": 1},
         ]
     )
 

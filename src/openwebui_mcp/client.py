@@ -253,6 +253,28 @@ class OpenWebUIClient:
     # Model Management
     # ==========================================================================
 
+    async def _list_accessible_custom_model_ids(
+        self, api_key: Optional[str] = None
+    ) -> set[str]:
+        """Return custom model IDs visible to the authenticated user."""
+        first_page = await self.get("/api/v1/models/list?page=1", api_key)
+        items = first_page.get("items")
+        total = first_page.get("total")
+        if not isinstance(items, list) or not isinstance(total, int):
+            return {
+                item["id"] for item in (items or []) if isinstance(item, dict) and item.get("id")
+            }
+        all_items = list(items)
+        page = 2
+        while len(all_items) < total:
+            next_page = await self.get(f"/api/v1/models/list?page={page}", api_key)
+            page_items = next_page.get("items")
+            if not isinstance(page_items, list) or not page_items:
+                break
+            all_items.extend(page_items)
+            page += 1
+        return {item["id"] for item in all_items if isinstance(item, dict) and item.get("id")}
+
     async def list_models(
         self,
         kind: Literal["all", "custom", "base"] = "all",
@@ -267,8 +289,8 @@ class OpenWebUIClient:
         """List the authenticated user's effective models with local filters.
 
         ``/api/models`` is intentionally the source of truth: it is scoped by
-        Open WebUI to the current user's accessible models. Export is only
-        consulted to identify Workspace custom records.
+        Open WebUI to the current user's accessible models. The user-scoped
+        Workspace model list is used only to classify custom records.
         """
         effective_payload = await self.get("/api/models", api_key)
         collection_key = next(
@@ -277,26 +299,7 @@ class OpenWebUIClient:
         )
         effective_models = effective_payload.get(collection_key, []) if collection_key else []
 
-        # The export is only used as a classification index.  The records
-        # returned to callers always come from the user-scoped endpoint above.
-        export_payload = await self.get("/api/v1/models/export", api_key)
-        export_models = (
-            export_payload
-            if isinstance(export_payload, list)
-            else next(
-                (
-                    export_payload.get(key)
-                    for key in ("data", "items")
-                    if isinstance(export_payload.get(key), list)
-                ),
-                [],
-            )
-        )
-        custom_ids = {
-            item["id"]
-            for item in export_models
-            if isinstance(item, dict) and item.get("id")
-        }
+        custom_ids = await self._list_accessible_custom_model_ids(api_key)
 
         models = []
         for item in effective_models:
