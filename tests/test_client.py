@@ -49,6 +49,84 @@ async def test_list_files_fetches_all_pages_without_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_knowledge_fetches_all_30_item_pages_and_compacts_records() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(
+        side_effect=[
+            {
+                "items": [
+                    {
+                        "id": f"knowledge-{index}",
+                        "name": f"Knowledge {index}",
+                        "description": "description",
+                        "access_grants": [{"id": "group-1"}],
+                        "internal": "omitted",
+                    }
+                    for index in range(30)
+                ],
+                "total": 45,
+            },
+            {
+                "items": [
+                    {
+                        "id": f"knowledge-{index}",
+                        "name": f"Knowledge {index}",
+                        "description": "description",
+                        "access_grants": [],
+                        "internal": "omitted",
+                    }
+                    for index in range(30, 45)
+                ],
+                "total": 45,
+            },
+        ]
+    )
+
+    result = await client.list_knowledge(api_key="token")
+
+    assert [item["id"] for item in result["items"]] == [
+        f"knowledge-{index}" for index in range(45)
+    ]
+    assert result["total"] == 45
+    assert result["items"][0] == {
+        "id": "knowledge-0",
+        "name": "Knowledge 0",
+        "description": "description",
+        "access_grant_count": 1,
+    }
+    assert "internal" not in result["items"][0]
+    assert [call.args for call in client.get.await_args_list] == [
+        ("/api/v1/knowledge/?page=1", "token"),
+        ("/api/v1/knowledge/?page=2", "token"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_knowledge_stops_on_empty_page_and_handles_invalid_total() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(
+        side_effect=[
+            {"items": [{"id": "knowledge-1", "access_grants": None}], "total": 60},
+            {"items": []},
+        ]
+    )
+
+    result = await client.list_knowledge(api_key="token")
+
+    assert result["items"] == [{"id": "knowledge-1"}]
+    assert [call.args for call in client.get.await_args_list] == [
+        ("/api/v1/knowledge/?page=1", "token"),
+        ("/api/v1/knowledge/?page=2", "token"),
+    ]
+
+    client.get = AsyncMock(return_value={"items": [{"id": "knowledge-1"}], "total": "60"})
+    result = await client.list_knowledge(api_key="token")
+
+    assert result["items"] == [{"id": "knowledge-1", "access_grant_count": 0}]
+    client.get.assert_awaited_once_with("/api/v1/knowledge/?page=1", "token")
+
+
+@pytest.mark.asyncio
 async def test_get_model_uses_query_parameter_for_slash_safe_id() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.get = AsyncMock(return_value={"id": "provider/model"})
