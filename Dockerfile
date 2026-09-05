@@ -36,7 +36,9 @@ LABEL org.opencontainers.image.source="https://github.com/jfbloom22/open-webui-m
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
-ENV MCP_TRANSPORT=http
+# Codex launches the local MCP server over stdio. Override this at runtime
+# with MCP_TRANSPORT=http when an HTTP deployment is explicitly required.
+ENV MCP_TRANSPORT=stdio
 ENV MCP_HTTP_HOST=0.0.0.0
 ENV MCP_HTTP_PORT=8000
 ENV MCP_HTTP_PATH=/mcp

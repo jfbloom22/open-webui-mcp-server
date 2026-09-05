@@ -2,12 +2,15 @@
 
 An MCP (Model Context Protocol) server that exposes Open WebUI's admin APIs as tools, allowing AI assistants to manage users, groups, models, knowledge bases, and more.
 
+List tools return compact indexes containing identifiers and discovery metadata. Use the corresponding `get_*` tool when the full configuration, content, memberships, or permissions are needed.
+
 ## Features
 
 - **User Management**: List, get, update roles, delete users
 - **Group Management**: Create, update, add/remove members, delete groups
 - **Model Management**: Create custom models, update system prompts, manage parameters
-- **Knowledge Base Management**: Create, list, delete knowledge bases
+- **Knowledge Base Management**: Create, list, update, and delete knowledge bases
+- **File Management**: Upload local files, optionally linking them to a knowledge base, and manage file content
 - **Chat Management**: List, view, delete chats
 - **Tool & Function Discovery**: List available tools and functions
 - **Permission-Aware**: All operations respect the logged-in user's permissions
@@ -133,7 +136,7 @@ additional tools when needed.
 | `list_models` | List all models | Any |
 | `get_model` | Get model configuration | Any |
 | `create_model` | Create custom model | Admin |
-| `update_model` | Update model settings | Admin |
+| `update_model` | Update model settings, description, tags, suggestions, and access grants | Admin |
 | `delete_model` | Delete a model | Admin |
 
 ### Knowledge Base Management
@@ -142,7 +145,18 @@ additional tools when needed.
 | `list_knowledge_bases` | List knowledge bases | Any |
 | `get_knowledge_base` | Get knowledge base details | Any |
 | `create_knowledge_base` | Create knowledge base | Any |
+| `update_knowledge_base` | Update knowledge base name/description | Owner |
 | `delete_knowledge_base` | Delete knowledge base | Owner |
+
+### File Management
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `upload_file` | Upload an absolute local file path, optionally linking it to a knowledge base | Any, subject to Open WebUI permissions |
+| `list_files` | List uploaded files | Any |
+| `search_files` | Search uploaded files by filename | Any |
+| `get_file` | Get file metadata | Any |
+| `get_file_content` | Get extracted file content | Any |
+| `update_file_content` | Update extracted text content | File owner/write access |
 
 ### Chat Management
 | Tool | Description | Permission |

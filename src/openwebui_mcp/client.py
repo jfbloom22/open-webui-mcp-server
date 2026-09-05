@@ -1,6 +1,9 @@
 """Open WebUI API client using a locally configured management credential."""
 
+import json
+import mimetypes
 import os
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -25,9 +28,7 @@ class OpenWebUIClient:
         self.api_key = api_key or os.getenv("OPENWEBUI_API_KEY", "")
 
         if not self.base_url:
-            raise ValueError(
-                "Open WebUI URL required. Set OPENWEBUI_URL env var or pass base_url."
-            )
+            raise ValueError("Open WebUI URL required. Set OPENWEBUI_URL env var or pass base_url.")
 
     def _get_headers(self, api_key: Optional[str] = None) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -77,13 +78,61 @@ class OpenWebUIClient:
     async def delete(self, path: str, api_key: Optional[str] = None, **kwargs: Any) -> dict:
         return await self.request("DELETE", path, api_key, **kwargs)
 
+    @staticmethod
+    def _compact_collection(
+        payload: dict[str, Any],
+        fields: tuple[str, ...],
+        transforms: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Keep list responses index-like; use get_* for full records."""
+        transforms = transforms or {}
+        collection_key = next(
+            (key for key in ("data", "users", "items") if isinstance(payload.get(key), list)),
+            None,
+        )
+        if collection_key is None:
+            return payload
+        compacted = []
+        for item in payload[collection_key]:
+            if not isinstance(item, dict):
+                compacted.append(item)
+                continue
+            result = {}
+            for key in fields:
+                if key not in item:
+                    continue
+                value = item[key]
+                if isinstance(value, str):
+                    limit = 240 if key == "title" else 500
+                    if len(value) > limit:
+                        value = value[: limit - 1].rstrip() + "…"
+                result[key] = value
+            for key, transform in transforms.items():
+                value = transform(item)
+                if value is not None:
+                    result[key] = value
+            compacted.append(result)
+        return {**payload, collection_key: compacted}
+
     # ==========================================================================
     # User Management
     # ==========================================================================
 
     async def list_users(self, api_key: Optional[str] = None) -> dict:
         """List all users (admin only)."""
-        return await self.get("/api/v1/users/", api_key)
+        return self._compact_collection(
+            await self.get("/api/v1/users/", api_key),
+            (
+                "id",
+                "email",
+                "username",
+                "name",
+                "role",
+                "last_active_at",
+                "created_at",
+                "group_ids",
+            ),
+        )
 
     async def get_user(self, user_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific user."""
@@ -113,7 +162,10 @@ class OpenWebUIClient:
 
     async def list_groups(self, api_key: Optional[str] = None) -> dict:
         """List all groups."""
-        return await self.get("/api/v1/groups/", api_key)
+        return self._compact_collection(
+            await self.get("/api/v1/groups/", api_key),
+            ("id", "name", "description", "member_count", "created_at", "updated_at"),
+        )
 
     async def create_group(
         self, name: str, description: str = "", api_key: Optional[str] = None
@@ -174,7 +226,25 @@ class OpenWebUIClient:
 
     async def list_models(self, api_key: Optional[str] = None) -> dict:
         """Export the custom model definitions managed by Open WebUI."""
-        return await self.get("/api/v1/models/export", api_key)
+        payload = await self.get("/api/v1/models/export", api_key)
+
+        def knowledge_ids(item: dict[str, Any]) -> Optional[list[str]]:
+            knowledge = (item.get("meta") or {}).get("knowledge")
+            if not isinstance(knowledge, list):
+                return None
+            return [
+                entry["id"] for entry in knowledge if isinstance(entry, dict) and entry.get("id")
+            ]
+
+        return self._compact_collection(
+            payload,
+            ("id", "name", "base_model_id", "is_active", "updated_at", "created_at"),
+            {
+                "description": lambda item: (item.get("meta") or {}).get("description"),
+                "tags": lambda item: (item.get("meta") or {}).get("tags"),
+                "knowledge_ids": knowledge_ids,
+            },
+        )
 
     async def get_model(self, model_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific custom model by ID."""
@@ -207,8 +277,8 @@ class OpenWebUIClient:
         name: Optional[str] = None,
         meta: Optional[dict] = None,
         params: Optional[dict] = None,
-        base_model_id: Optional[str] = None,
         access_grants: Optional[list[dict]] = None,
+        base_model_id: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> dict:
         """Update a model while preserving fields required by the current API."""
@@ -221,7 +291,9 @@ class OpenWebUIClient:
             ),
             "meta": {**(existing.get("meta") or {}), **(meta or {})},
             "params": {**(existing.get("params") or {}), **(params or {})},
-            "access_grants": existing.get("access_grants"),
+            "access_grants": (
+                access_grants if access_grants is not None else existing.get("access_grants")
+            ),
             "is_active": existing.get("is_active", True),
         }
         if access_grants is not None:
@@ -238,7 +310,11 @@ class OpenWebUIClient:
 
     async def list_knowledge(self, api_key: Optional[str] = None) -> dict:
         """List all knowledge bases."""
-        return await self.get("/api/v1/knowledge/", api_key)
+        return self._compact_collection(
+            await self.get("/api/v1/knowledge/", api_key),
+            ("id", "name", "description", "file_count", "write_access", "created_at", "updated_at"),
+            {"access_grant_count": lambda item: len(item.get("access_grants", []))},
+        )
 
     async def get_knowledge(self, knowledge_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific knowledge base."""
@@ -282,7 +358,57 @@ class OpenWebUIClient:
 
     async def list_files(self, api_key: Optional[str] = None) -> dict:
         """List all files."""
-        return await self.get("/api/v1/files/", api_key)
+
+        def knowledge_id(item: dict[str, Any]) -> Optional[str]:
+            meta = item.get("meta") or {}
+            data = meta.get("data") if isinstance(meta, dict) else None
+            return data.get("knowledge_id") if isinstance(data, dict) else None
+
+        return self._compact_collection(
+            await self.get("/api/v1/files/", api_key),
+            ("id", "filename", "user_id", "hash", "created_at", "updated_at"),
+            {"knowledge_id": knowledge_id},
+        )
+
+    async def upload_file(
+        self,
+        file_path: str,
+        knowledge_id: Optional[str] = None,
+        process: bool = True,
+        process_in_background: bool = True,
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """Upload a local file, optionally linking it to a knowledge base."""
+        path = Path(file_path).expanduser()
+        if not path.is_absolute():
+            raise ValueError("file_path must be an absolute path")
+        path = path.resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"File not found: {path}")
+
+        metadata = {"knowledge_id": knowledge_id} if knowledge_id else {}
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        headers = {"Accept": "application/json"}
+        token = api_key or self.api_key
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        params = {
+            "process": str(process).lower(),
+            "process_in_background": str(process_in_background).lower(),
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            with path.open("rb") as file_handle:
+                response = await client.post(
+                    f"{self.base_url}/api/v1/files/",
+                    headers=headers,
+                    params=params,
+                    data={"metadata": json.dumps(metadata)},
+                    files={"file": (path.name, file_handle, content_type)},
+                )
+            response.raise_for_status()
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {"data": payload}
 
     async def search_files(self, filename: str, api_key: Optional[str] = None) -> dict:
         """Search files by filename pattern (supports wildcards)."""
@@ -345,7 +471,10 @@ class OpenWebUIClient:
 
     async def list_prompts(self, api_key: Optional[str] = None) -> dict:
         """List all prompts/templates."""
-        return await self.get("/api/v1/prompts/", api_key)
+        return self._compact_collection(
+            await self.get("/api/v1/prompts/", api_key),
+            ("id", "command", "name", "tags", "is_active", "created_at", "updated_at"),
+        )
 
     async def create_prompt(
         self,
@@ -404,13 +533,9 @@ class OpenWebUIClient:
         """Add a new memory."""
         return await self.post("/api/v1/memories/add", api_key, json={"content": content})
 
-    async def query_memories(
-        self, content: str, k: int = 5, api_key: Optional[str] = None
-    ) -> dict:
+    async def query_memories(self, content: str, k: int = 5, api_key: Optional[str] = None) -> dict:
         """Query memories using semantic search."""
-        return await self.post(
-            "/api/v1/memories/query", api_key, json={"content": content, "k": k}
-        )
+        return await self.post("/api/v1/memories/query", api_key, json={"content": content, "k": k})
 
     async def update_memory(
         self, memory_id: str, content: str, api_key: Optional[str] = None
@@ -438,7 +563,10 @@ class OpenWebUIClient:
 
     async def list_chats(self, api_key: Optional[str] = None) -> dict:
         """List user's chats."""
-        return await self.get("/api/v1/chats/", api_key)
+        return self._compact_collection(
+            await self.get("/api/v1/chats/", api_key),
+            ("id", "title", "updated_at", "created_at", "last_read_at", "active"),
+        )
 
     async def get_chat(self, chat_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific chat."""
@@ -480,13 +608,9 @@ class OpenWebUIClient:
         """Get a specific folder."""
         return await self.get(f"/api/v1/folders/{folder_id}", api_key)
 
-    async def update_folder(
-        self, folder_id: str, name: str, api_key: Optional[str] = None
-    ) -> dict:
+    async def update_folder(self, folder_id: str, name: str, api_key: Optional[str] = None) -> dict:
         """Update a folder's name."""
-        return await self.post(
-            f"/api/v1/folders/{folder_id}/update", api_key, json={"name": name}
-        )
+        return await self.post(f"/api/v1/folders/{folder_id}/update", api_key, json={"name": name})
 
     async def delete_folder(self, folder_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a folder."""
@@ -498,7 +622,11 @@ class OpenWebUIClient:
 
     async def list_tools(self, api_key: Optional[str] = None) -> dict:
         """List all tools."""
-        return await self.get("/api/v1/tools/", api_key)
+        return self._compact_collection(
+            await self.get("/api/v1/tools/", api_key),
+            ("id", "name", "updated_at", "created_at"),
+            {"description": lambda item: (item.get("meta") or {}).get("description")},
+        )
 
     async def get_tool(self, tool_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific tool."""
@@ -546,7 +674,10 @@ class OpenWebUIClient:
 
     async def list_functions(self, api_key: Optional[str] = None) -> dict:
         """List all functions (filters/pipes)."""
-        return await self.get("/api/v1/functions/", api_key)
+        return self._compact_collection(
+            await self.get("/api/v1/functions/", api_key),
+            ("id", "type", "name", "is_active", "is_global", "updated_at", "created_at"),
+        )
 
     async def get_function(self, function_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific function."""
@@ -585,9 +716,7 @@ class OpenWebUIClient:
             data["meta"] = meta
         return await self.post(f"/api/v1/functions/id/{function_id}/update", api_key, json=data)
 
-    async def toggle_function(
-        self, function_id: str, api_key: Optional[str] = None
-    ) -> dict:
+    async def toggle_function(self, function_id: str, api_key: Optional[str] = None) -> dict:
         """Toggle a function's enabled state."""
         return await self.post(f"/api/v1/functions/id/{function_id}/toggle", api_key)
 
@@ -641,9 +770,7 @@ class OpenWebUIClient:
         """Get tool server connections (admin only)."""
         return await self.get("/api/v1/configs/tool_servers", api_key)
 
-    async def set_tool_servers(
-        self, connections: list, api_key: Optional[str] = None
-    ) -> dict:
+    async def set_tool_servers(self, connections: list, api_key: Optional[str] = None) -> dict:
         """Set tool server connections (admin only)."""
         return await self.post(
             "/api/v1/configs/tool_servers",
@@ -657,7 +784,10 @@ class OpenWebUIClient:
 
     async def list_notes(self, api_key: Optional[str] = None) -> dict:
         """List all notes."""
-        return await self.get("/api/v1/notes/", api_key)
+        return self._compact_collection(
+            await self.get("/api/v1/notes/", api_key),
+            ("id", "title", "is_pinned", "updated_at", "created_at"),
+        )
 
     async def create_note(
         self,
@@ -701,7 +831,21 @@ class OpenWebUIClient:
 
     async def list_channels(self, api_key: Optional[str] = None) -> dict:
         """List channels accessible to the user."""
-        return await self.get("/api/v1/channels/", api_key)
+        return self._compact_collection(
+            await self.get("/api/v1/channels/", api_key),
+            (
+                "id",
+                "type",
+                "name",
+                "description",
+                "is_private",
+                "last_message_at",
+                "unread_count",
+                "created_at",
+                "updated_at",
+            ),
+            {"member_count": lambda item: len(item.get("user_ids") or [])},
+        )
 
     async def create_channel(
         self,

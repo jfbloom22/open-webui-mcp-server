@@ -215,6 +215,16 @@ class FileIdParam(BaseModel):
 class FileSearchParam(BaseModel):
     filename: str = Field(description="Filename pattern (supports wildcards like *.pdf)")
 
+class FileUploadParam(BaseModel):
+    file_path: str = Field(description="Absolute local path to the file to upload")
+    knowledge_id: Optional[str] = Field(
+        default=None, description="Optional knowledge base ID to link the uploaded file to"
+    )
+    process: bool = Field(default=True, description="Whether Open WebUI should process the file")
+    process_in_background: bool = Field(
+        default=True, description="Whether processing should continue in the background"
+    )
+
 class FileContentParam(BaseModel):
     file_id: str = Field(description="File ID")
     content: str = Field(description="New text content")
@@ -564,6 +574,17 @@ async def delete_knowledge_base(params: KnowledgeIdParam, ctx: Context) -> dict[
 async def list_files(ctx: Context) -> dict[str, Any]:
     """List all uploaded files with metadata."""
     return await get_client().list_files(get_user_token())
+
+@mcp.tool()
+async def upload_file(params: FileUploadParam, ctx: Context) -> dict[str, Any]:
+    """Upload a local file, optionally linking it to a knowledge base."""
+    return await get_client().upload_file(
+        file_path=params.file_path,
+        knowledge_id=params.knowledge_id,
+        process=params.process,
+        process_in_background=params.process_in_background,
+        api_key=get_user_token(),
+    )
 
 @mcp.tool()
 async def search_files(params: FileSearchParam, ctx: Context) -> dict[str, Any]:
