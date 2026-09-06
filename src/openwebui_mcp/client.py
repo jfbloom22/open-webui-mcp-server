@@ -838,18 +838,66 @@ class OpenWebUIClient:
         """List all folders."""
         return await self.get("/api/v1/folders/", api_key)
 
-    async def create_folder(self, name: str, api_key: Optional[str] = None) -> dict:
-        """Create a new folder."""
-        return await self.post("/api/v1/folders/", api_key, json={"name": name})
+    async def create_folder(
+        self,
+        name: str,
+        system_prompt: Optional[str] = None,
+        knowledge_ids: Optional[list[str]] = None,
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """Create a folder/project with optional system prompt and collections."""
+        payload: dict[str, Any] = {"name": name}
+        if system_prompt is not None or knowledge_ids is not None:
+            payload["data"] = {
+                "system_prompt": system_prompt or "",
+                "files": [
+                    {"id": knowledge_id, "type": "collection"}
+                    for knowledge_id in (knowledge_ids or [])
+                ],
+            }
+        return await self.post("/api/v1/folders/", api_key, json=payload)
 
     async def get_folder(self, folder_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific folder."""
         return await self.get(f"/api/v1/folders/{self._path_id(folder_id)}", api_key)
 
-    async def update_folder(self, folder_id: str, name: str, api_key: Optional[str] = None) -> dict:
-        """Update a folder's name."""
+    async def update_folder(
+        self,
+        folder_id: str,
+        name: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        knowledge_ids: Optional[list[str]] = None,
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """Update folder/project configuration while preserving other folder data."""
+        data: dict[str, Any] = {}
+        if name is not None:
+            data["name"] = name
+        if system_prompt is not None or knowledge_ids is not None:
+            existing = await self.get_folder(folder_id, api_key)
+            folder_data = dict(existing.get("data") or {})
+            if system_prompt is not None:
+                folder_data["system_prompt"] = system_prompt
+            if knowledge_ids is not None:
+                existing_files = folder_data.get("files")
+                preserved_items = (
+                    [
+                        item
+                        for item in existing_files
+                        if isinstance(item, dict) and item.get("type") != "collection"
+                    ]
+                    if isinstance(existing_files, list)
+                    else []
+                )
+                folder_data["files"] = preserved_items + [
+                    {"id": knowledge_id, "type": "collection"}
+                    for knowledge_id in knowledge_ids
+                ]
+            data["data"] = folder_data
+        if not data:
+            raise ValueError("At least one folder field must be provided")
         return await self.post(
-            f"/api/v1/folders/{self._path_id(folder_id)}/update", api_key, json={"name": name}
+            f"/api/v1/folders/{self._path_id(folder_id)}/update", api_key, json=data
         )
 
     async def delete_folder(self, folder_id: str, api_key: Optional[str] = None) -> dict:

@@ -186,7 +186,7 @@ async def test_mutation_routes_match_current_open_webui_source() -> None:
     await client.delete_group("group-1", "token")
     await client.delete_tool("tool-1", "token")
     await client.delete_function("function-1", "token")
-    await client.create_folder("Research", "token")
+    await client.create_folder("Research", api_key="token")
     await client.archive_chat("chat-1", "token")
     await client.clone_chat("chat-1", "token")
 
@@ -200,6 +200,73 @@ async def test_mutation_routes_match_current_open_webui_source() -> None:
         ("/api/v1/chats/chat-1/archive", "token"),
         ("/api/v1/chats/chat-1/clone", "token"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_folder_maps_project_configuration() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.post = AsyncMock(return_value={"id": "folder-1"})
+
+    await client.create_folder(
+        "Research",
+        system_prompt="Use primary sources.",
+        knowledge_ids=["kb-1"],
+        api_key="token",
+    )
+
+    client.post.assert_awaited_once_with(
+        "/api/v1/folders/",
+        "token",
+        json={
+            "name": "Research",
+            "data": {
+                "system_prompt": "Use primary sources.",
+                "files": [{"id": "kb-1", "type": "collection"}],
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_folder_preserves_non_collection_attachments() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_folder = AsyncMock(
+        return_value={
+            "data": {
+                "system_prompt": "Old prompt",
+                "files": [
+                    {"id": "old-kb", "type": "collection"},
+                    {"id": "file-1", "type": "file"},
+                    {"id": "note-1", "type": "note"},
+                ],
+                "other": "preserved",
+            }
+        }
+    )
+    client.post = AsyncMock(return_value={"id": "folder-1"})
+
+    await client.update_folder(
+        "folder-1",
+        system_prompt="New prompt",
+        knowledge_ids=["new-kb"],
+        api_key="token",
+    )
+
+    client.post.assert_awaited_once_with(
+        "/api/v1/folders/folder-1/update",
+        "token",
+        json={
+            "data": {
+                "system_prompt": "New prompt",
+                "files": [
+                    {"id": "file-1", "type": "file"},
+                    {"id": "note-1", "type": "note"},
+                    {"id": "new-kb", "type": "collection"},
+                ],
+                "other": "preserved",
+            }
+        },
+    )
 
 
 @pytest.mark.asyncio

@@ -89,6 +89,10 @@ MEMBER_PROFILE_TOOLS = {
     "query_memories",
     "add_memory",
     "update_memory",
+    "list_folders",
+    "get_folder",
+    "create_folder",
+    "update_folder",
 }
 
 # Initialize client (URL from env)
@@ -354,6 +358,12 @@ class ChatIdParam(BaseModel):
 
 class FolderCreateParam(BaseModel):
     name: str = Field(description="Folder name")
+    system_prompt: Optional[str] = Field(
+        default=None, description="Folder/project system prompt"
+    )
+    knowledge_ids: Optional[list[str]] = Field(
+        default=None, description="Knowledge Base collection IDs attached to this folder/project"
+    )
 
 
 class FolderIdParam(BaseModel):
@@ -362,7 +372,14 @@ class FolderIdParam(BaseModel):
 
 class FolderUpdateParam(BaseModel):
     folder_id: str = Field(description="Folder ID")
-    name: str = Field(description="New folder name")
+    name: Optional[str] = Field(default=None, description="New folder name")
+    system_prompt: Optional[str] = Field(
+        default=None, description="New folder/project system prompt; empty string clears it"
+    )
+    knowledge_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Replacement Knowledge Base collection IDs; empty list clears collections",
+    )
 
 
 class ToolCreateParam(BaseModel):
@@ -995,31 +1012,71 @@ async def clone_chat(params: ChatIdParam, ctx: Context) -> dict[str, Any]:
 
 @mcp.tool()
 async def list_folders(ctx: Context) -> dict[str, Any]:
-    """List all folders for organizing chats."""
+    """List folders/projects accessible to the current user."""
     return await get_client().list_folders(get_user_token())
 
 
 @mcp.tool()
 async def create_folder(params: FolderCreateParam, ctx: Context) -> dict[str, Any]:
-    """Create a new folder."""
-    return await get_client().create_folder(params.name, get_user_token())
+    """Create a folder/project with optional instructions and Knowledge Base collections."""
+    token = get_user_token()
+    result = await get_client().create_folder(
+        params.name, params.system_prompt, params.knowledge_ids, token
+    )
+    return await audit_mutation(
+        "folder.create",
+        params.name,
+        [
+            field
+            for field, value in {
+                "name": params.name,
+                "system_prompt": params.system_prompt,
+                "knowledge_ids": params.knowledge_ids,
+            }.items()
+            if value is not None
+        ],
+        result,
+        token,
+    )
 
 
 @mcp.tool()
 async def get_folder(params: FolderIdParam, ctx: Context) -> dict[str, Any]:
-    """Get folder details."""
+    """Get full folder/project details, including instructions and attached knowledge."""
     return await get_client().get_folder(params.folder_id, get_user_token())
 
 
 @mcp.tool()
 async def update_folder(params: FolderUpdateParam, ctx: Context) -> dict[str, Any]:
-    """Rename a chat folder; folders organize chats only.
+    """Update folder/project instructions or knowledge, or rename the folder.
 
-    Use ``update_model`` for model-level project instructions and knowledge.
-    Open WebUI does not support folder-level instructions or knowledge
-    attachments in its current API.
+    This changes folder-level project configuration. Use ``update_model`` for
+    reusable model-level instructions, knowledge, and tools. An empty
+    ``knowledge_ids`` list removes collection attachments while preserving
+    directly attached files and notes.
     """
-    return await get_client().update_folder(params.folder_id, params.name, get_user_token())
+    if params.name is None and params.system_prompt is None and params.knowledge_ids is None:
+        raise ValueError("At least one folder field must be provided")
+    token = get_user_token()
+    changed_fields = [
+        field
+        for field, value in {
+            "name": params.name,
+            "system_prompt": params.system_prompt,
+            "knowledge_ids": params.knowledge_ids,
+        }.items()
+        if value is not None
+    ]
+    result = await get_client().update_folder(
+        params.folder_id,
+        name=params.name,
+        system_prompt=params.system_prompt,
+        knowledge_ids=params.knowledge_ids,
+        api_key=token,
+    )
+    return await audit_mutation(
+        "folder.update", params.folder_id, changed_fields, result, token
+    )
 
 
 @mcp.tool()

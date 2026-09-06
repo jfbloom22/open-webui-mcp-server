@@ -151,11 +151,11 @@ when creating a provider/base access record. It is not available in the member
 profile.
 
 `create_model` and `update_model` accept `system_prompt` and `knowledge_ids` for
-model-level project configuration. `knowledge_ids` are Open WebUI Knowledge
-Base IDs. On update, collection references are replaced while direct file
-attachments are preserved. Folder tools only organize chats: Open WebUI does
-not provide folder-level instructions or knowledge attachments through its
-current API.
+model-level configuration. `create_folder` and `update_folder` accept the same
+concepts for folder/project-level configuration. `knowledge_ids` are Open WebUI
+Knowledge Base IDs. On update, collection references are replaced while direct
+file and note attachments are preserved. Folder settings apply to chats created
+in that folder; model settings apply wherever that model is used.
 
 ### Knowledge Base Management
 | Tool | Description | Permission |
