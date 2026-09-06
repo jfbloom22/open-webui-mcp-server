@@ -177,6 +177,43 @@ async def test_update_model_preserves_full_form_and_changes_base_model() -> None
 
 
 @pytest.mark.asyncio
+async def test_update_model_can_clear_named_params_while_preserving_the_full_form() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_model = AsyncMock(
+        return_value={
+            "id": "the-steadfast-preacher",
+            "name": "The Steadfast Preacher",
+            "base_model_id": "gpt-5.6-terra",
+            "meta": {"toolIds": ["progress_ledger"]},
+            "params": {"temperature": 0.7, "max_tokens": 1800, "system": "Keep this"},
+            "access_grants": [],
+            "is_active": True,
+        }
+    )
+    client.post = AsyncMock(return_value={"id": "the-steadfast-preacher"})
+
+    await client.update_model(
+        "the-steadfast-preacher",
+        clear_params=["temperature"],
+        api_key="token",
+    )
+
+    client.post.assert_awaited_once_with(
+        "/api/v1/models/model/update",
+        "token",
+        json={
+            "id": "the-steadfast-preacher",
+            "name": "The Steadfast Preacher",
+            "base_model_id": "gpt-5.6-terra",
+            "meta": {"toolIds": ["progress_ledger"]},
+            "params": {"max_tokens": 1800, "system": "Keep this"},
+            "access_grants": [],
+            "is_active": True,
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_request_wraps_json_lists_for_mcp_structured_content() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
 

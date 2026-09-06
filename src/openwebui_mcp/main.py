@@ -242,6 +242,10 @@ class ModelUpdateParam(BaseModel):
     system_prompt: Optional[str] = Field(default=None, description="New system prompt")
     temperature: Optional[float] = Field(default=None, description="New temperature")
     max_tokens: Optional[int] = Field(default=None, description="New max tokens")
+    clear_params: Optional[list[str]] = Field(
+        default=None,
+        description="Stored model parameter keys to remove, such as temperature",
+    )
     tool_ids: Optional[list[str]] = Field(default=None, description="Open WebUI tool server IDs")
     access_grants: Optional[list[dict[str, Any]]] = Field(
         default=None, description="Open WebUI access grants"
@@ -357,6 +361,7 @@ class ToolCreateParam(BaseModel):
     id: str = Field(description="Tool ID (slug-format)")
     name: str = Field(description="Tool name")
     content: str = Field(description="Tool Python code")
+    meta: Optional[dict[str, Any]] = Field(default=None, description="Tool metadata")
 
 
 class ToolIdParam(BaseModel):
@@ -614,6 +619,7 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
         params.model_id,
         name=params.name,
         params=model_params,
+        clear_params=params.clear_params,
         meta=model_meta,
         base_model_id=params.base_model_id,
         access_grants=params.access_grants,
@@ -629,6 +635,7 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
                 "system_prompt": params.system_prompt,
                 "temperature": params.temperature,
                 "max_tokens": params.max_tokens,
+                "clear_params": params.clear_params,
                 "base_model_id": params.base_model_id,
                 "tool_ids": params.tool_ids,
                 "access_grants": params.access_grants,
@@ -1017,7 +1024,7 @@ async def get_tool(params: ToolIdParam, ctx: Context) -> dict[str, Any]:
 async def create_tool(params: ToolCreateParam, ctx: Context) -> dict[str, Any]:
     """Create a new custom tool with Python code."""
     return await get_client().create_tool(
-        params.id, params.name, params.content, api_key=get_user_token()
+        params.id, params.name, params.content, meta=params.meta, api_key=get_user_token()
     )
 
 

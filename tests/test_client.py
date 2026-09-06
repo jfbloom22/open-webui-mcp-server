@@ -1,5 +1,6 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from openwebui_mcp.client import OpenWebUIClient
@@ -199,6 +200,78 @@ async def test_mutation_routes_match_current_open_webui_source() -> None:
         ("/api/v1/chats/chat-1/archive", "token"),
         ("/api/v1/chats/chat-1/clone", "token"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_tool_always_sends_metadata_object() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.post = AsyncMock(return_value={"id": "weather_tool"})
+
+    await client.create_tool("weather_tool", "Weather", "class Tools: pass", api_key="token")
+
+    client.post.assert_awaited_once_with(
+        "/api/v1/tools/create",
+        "token",
+        json={"id": "weather_tool", "name": "Weather", "content": "class Tools: pass", "meta": {}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_tool_sends_complete_form_and_preserves_metadata() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_tool = AsyncMock(
+        return_value={
+            "id": "weather_tool",
+            "name": "Existing Weather",
+            "content": "class Tools: pass",
+            "meta": {"description": "Existing description", "manifest": {}},
+        }
+    )
+    client.post = AsyncMock(return_value={"id": "weather_tool"})
+
+    await client.update_tool("weather_tool", name="Updated Weather", api_key="token")
+
+    client.get_tool.assert_awaited_once_with("weather_tool", "token")
+    client.post.assert_awaited_once_with(
+        "/api/v1/tools/id/weather_tool/update",
+        "token",
+        json={
+            "id": "weather_tool",
+            "name": "Updated Weather",
+            "content": "class Tools: pass",
+            "meta": {"description": "Existing description", "manifest": {}},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_request_error_preserves_body_without_credentials() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    token = "super-secret-token"
+    request = httpx.Request("POST", "https://webui.example/api/v1/tools/create")
+    response = httpx.Response(
+        422,
+        request=request,
+        headers={"content-type": "application/json"},
+        content=b'{"detail":"meta is required"}',
+    )
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, *args, **kwargs):
+            return response
+
+    with patch("openwebui_mcp.client.httpx.AsyncClient", return_value=AsyncClient()):
+        with pytest.raises(httpx.HTTPStatusError) as error:
+            await client.post("/api/v1/tools/create", token, json={})
+
+    assert 'meta is required' in str(error.value)
+    assert token not in str(error.value)
 
 
 @pytest.mark.asyncio

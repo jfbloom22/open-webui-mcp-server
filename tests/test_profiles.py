@@ -118,3 +118,36 @@ async def test_update_knowledge_access_forwards_token_and_preserves_api_response
     assert result["access_grants"] == grants
     assert result["files"] == []
     assert result["_audit"]["action"] == "knowledge.access.update"
+
+
+@pytest.mark.asyncio
+async def test_create_tool_schema_and_handler_forward_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema = main.ToolCreateParam.model_json_schema()
+    assert schema["properties"]["meta"]["anyOf"]
+
+    client = Mock()
+    client.create_tool = AsyncMock(return_value={"id": "weather_tool"})
+    monkeypatch.setattr(main, "get_client", lambda: client)
+    monkeypatch.setenv("MCP_PROFILE", "local")
+    monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
+
+    result = await main.create_tool.fn(
+        main.ToolCreateParam(
+            id="weather_tool",
+            name="Weather",
+            content="class Tools: pass",
+            meta={"description": "Weather lookup"},
+        ),
+        Mock(),
+    )
+
+    client.create_tool.assert_awaited_once_with(
+        "weather_tool",
+        "Weather",
+        "class Tools: pass",
+        meta={"description": "Weather lookup"},
+        api_key="session-token",
+    )
+    assert result == {"id": "weather_tool"}
