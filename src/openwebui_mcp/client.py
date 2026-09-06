@@ -1073,6 +1073,33 @@ class OpenWebUIClient:
             json={"TOOL_SERVER_CONNECTIONS": connections},
         )
 
+    async def update_tool_server_config(
+        self,
+        server_id: str,
+        function_name_filter_list: list[str],
+        description: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """Update one tool server's filter and optional description (admin only)."""
+        config = await self.get_tool_servers(api_key)
+        connections = config.get("TOOL_SERVER_CONNECTIONS", [])
+        matching = [
+            connection
+            for connection in connections
+            if (connection.get("info") or {}).get("id") == server_id
+        ]
+        if len(matching) != 1:
+            raise ValueError(f"Expected exactly one tool server with id {server_id!r}")
+
+        connection = matching[0]
+        connection.setdefault("config", {})[
+            "function_name_filter_list"
+        ] = function_name_filter_list
+        if description is not None:
+            connection.setdefault("info", {})["description"] = description
+
+        return await self.set_tool_servers(connections, api_key)
+
     # ==========================================================================
     # Notes Management
     # ==========================================================================

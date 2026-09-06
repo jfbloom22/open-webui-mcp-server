@@ -358,6 +358,54 @@ async def test_update_knowledge_access_uses_open_webui_access_form() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_tool_server_config_preserves_other_connections_and_fields() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(
+        return_value={
+            "TOOL_SERVER_CONNECTIONS": [
+                {
+                    "url": "http://member:8000/mcp",
+                    "type": "mcp",
+                    "info": {"id": "member", "description": "Old"},
+                    "config": {"enable": True, "function_name_filter_list": ["old"]},
+                },
+                {"url": "http://other:8000/mcp", "info": {"id": "other"}},
+            ]
+        }
+    )
+    client.post = AsyncMock(return_value={"ok": True})
+
+    await client.update_tool_server_config(
+        "member",
+        ["list_folders", "update_folder"],
+        description="Permission-scoped model, knowledge, and project management",
+        api_key="token",
+    )
+
+    client.post.assert_awaited_once_with(
+        "/api/v1/configs/tool_servers",
+        "token",
+        json={
+            "TOOL_SERVER_CONNECTIONS": [
+                {
+                    "url": "http://member:8000/mcp",
+                    "type": "mcp",
+                    "info": {
+                        "id": "member",
+                        "description": "Permission-scoped model, knowledge, and project management",
+                    },
+                    "config": {
+                        "enable": True,
+                        "function_name_filter_list": ["list_folders", "update_folder"],
+                    },
+                },
+                {"url": "http://other:8000/mcp", "info": {"id": "other"}},
+            ]
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_request_wraps_json_lists_for_mcp_structured_content() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
 

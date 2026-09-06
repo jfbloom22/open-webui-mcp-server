@@ -170,6 +170,16 @@ authenticated Open WebUI session, so visibility and mutation permissions are
 enforced by Open WebUI for the current user. Membership alone does not imply
 write access to a shared folder.
 
+### Tool Server Configuration
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `get_tool_servers` | Read configured MCP/OpenAPI tool-server connections | Admin |
+| `update_tool_server_config` | Update one connection's exposed-tool filter and optional description while preserving all other configuration | Admin |
+
+The filter is applied by Open WebUI after it discovers tools from the server.
+When a member profile gains a tool, update both the MCP profile allowlist and
+the registered member connection's filter with `update_tool_server_config`.
+
 ### Knowledge Base Management
 | Tool | Description | Permission |
 |------|-------------|------------|

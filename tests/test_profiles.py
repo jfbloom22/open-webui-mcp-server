@@ -92,6 +92,16 @@ def test_model_tool_schemas_expose_kind_filters_and_access_grants() -> None:
         } <= set(schema["properties"])
 
 
+def test_tool_server_config_schema_exposes_scoped_fields() -> None:
+    schema = main.ToolServerConfigUpdateParam.model_json_schema()
+
+    assert set(schema["properties"]) == {
+        "server_id",
+        "function_name_filter_list",
+        "description",
+    }
+
+
 @pytest.mark.asyncio
 async def test_model_handlers_forward_sampling_and_reasoning_parameters(
     monkeypatch: pytest.MonkeyPatch,

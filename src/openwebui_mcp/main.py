@@ -310,6 +310,18 @@ class KnowledgeAccessParam(BaseModel):
     access_grants: list[dict[str, Any]] = Field(description="Open WebUI knowledge access grants")
 
 
+class ToolServerConfigUpdateParam(BaseModel):
+    server_id: str = Field(description="Open WebUI tool server ID")
+    function_name_filter_list: list[str] = Field(
+        description=(
+            "Exact tool names to expose; use an empty list to expose all tools"
+        )
+    )
+    description: Optional[str] = Field(
+        default=None, description="Optional replacement tool server description"
+    )
+
+
 class FileIdParam(BaseModel):
     file_id: str = Field(description="File ID")
 
@@ -1351,6 +1363,34 @@ async def get_models_config(ctx: Context) -> dict[str, Any]:
 async def get_tool_servers(ctx: Context) -> dict[str, Any]:
     """Get tool server (MCP/OpenAPI) connections. ADMIN ONLY."""
     return await get_client().get_tool_servers(get_user_token())
+
+
+@mcp.tool()
+async def update_tool_server_config(
+    params: ToolServerConfigUpdateParam, ctx: Context
+) -> dict[str, Any]:
+    """Update one tool server's exposed-tool filter and optional description. ADMIN ONLY.
+
+    This preserves all other tool-server connections and fields. An empty
+    filter exposes every tool from the selected server.
+    """
+    token = get_user_token()
+    result = await get_client().update_tool_server_config(
+        params.server_id,
+        params.function_name_filter_list,
+        params.description,
+        token,
+    )
+    return await audit_mutation(
+        "tool_server.config.update",
+        params.server_id,
+        [
+            "function_name_filter_list",
+            *(["description"] if params.description is not None else []),
+        ],
+        result,
+        token,
+    )
 
 
 # =============================================================================
