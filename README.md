@@ -135,8 +135,8 @@ additional tools when needed.
 |------|-------------|------------|
 | `list_models` | List the authenticated user's effective models; filter with `kind=all`, `custom`, or `base` | Any |
 | `get_model` | Get model configuration | Any |
-| `create_model` | Create custom model | Admin |
-| `update_model` | Update model settings and access grants while preserving the existing model form | Admin |
+| `create_model` | Create custom model with model-level instructions, knowledge collections, and tools | Admin |
+| `update_model` | Update model-level instructions, knowledge collections, tools, settings, and access grants while preserving the existing model form | Admin |
 | `update_model_access` | Set grants for a custom, provider, or base model | Admin |
 | `delete_model` | Delete a model | Admin |
 
@@ -149,6 +149,13 @@ separate admin-only `update_model_access` tool accepts Open WebUI's
 `access_grants` for custom, provider, and base model IDs; `name` may be needed
 when creating a provider/base access record. It is not available in the member
 profile.
+
+`create_model` and `update_model` accept `system_prompt` and `knowledge_ids` for
+model-level project configuration. `knowledge_ids` are Open WebUI Knowledge
+Base IDs. On update, collection references are replaced while direct file
+attachments are preserved. Folder tools only organize chats: Open WebUI does
+not provide folder-level instructions or knowledge attachments through its
+current API.
 
 ### Knowledge Base Management
 | Tool | Description | Permission |

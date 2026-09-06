@@ -214,6 +214,68 @@ async def test_update_model_can_clear_named_params_while_preserving_the_full_for
 
 
 @pytest.mark.asyncio
+async def test_update_model_replaces_collection_knowledge_and_preserves_direct_files() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_model = AsyncMock(
+        return_value={
+            "id": "project-assistant",
+            "name": "Project Assistant",
+            "base_model_id": "gpt-5",
+            "meta": {
+                "knowledge": [
+                    {"id": "old-kb", "type": "collection"},
+                    {"id": "direct-file", "type": "file", "url": "direct-file"},
+                ]
+            },
+            "params": {},
+            "access_grants": [],
+            "is_active": True,
+        }
+    )
+    client.post = AsyncMock(return_value={"id": "project-assistant"})
+
+    await client.update_model("project-assistant", knowledge_ids=["new-kb"], api_key="token")
+
+    payload = client.post.await_args.kwargs["json"]
+    assert payload["meta"]["knowledge"] == [
+        {"id": "direct-file", "type": "file", "url": "direct-file"},
+        {"id": "new-kb", "type": "collection"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_model_maps_knowledge_ids_to_collection_references() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.post = AsyncMock(return_value={"id": "project-assistant"})
+
+    await client.create_model(
+        id="project-assistant",
+        name="Project Assistant",
+        base_model_id="gpt-5",
+        knowledge_ids=["kb-a", "kb-b"],
+        api_key="token",
+    )
+
+    client.post.assert_awaited_once_with(
+        "/api/v1/models/create",
+        "token",
+        json={
+            "id": "project-assistant",
+            "name": "Project Assistant",
+            "base_model_id": "gpt-5",
+            "meta": {
+                "knowledge": [
+                    {"id": "kb-a", "type": "collection"},
+                    {"id": "kb-b", "type": "collection"},
+                ]
+            },
+            "params": {},
+            "access_grants": None,
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_request_wraps_json_lists_for_mcp_structured_content() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
 

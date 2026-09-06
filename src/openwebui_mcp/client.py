@@ -406,14 +406,20 @@ class OpenWebUIClient:
         meta: Optional[dict] = None,
         params: Optional[dict] = None,
         access_grants: Optional[list[dict]] = None,
+        knowledge_ids: Optional[list[str]] = None,
         api_key: Optional[str] = None,
     ) -> dict:
         """Create a new model (admin only)."""
+        model_meta = dict(meta or {})
+        if knowledge_ids is not None:
+            model_meta["knowledge"] = [
+                {"id": knowledge_id, "type": "collection"} for knowledge_id in knowledge_ids
+            ]
         data = {
             "id": id,
             "name": name,
             "base_model_id": base_model_id,
-            "meta": meta or {},
+            "meta": model_meta,
             "params": params or {},
             "access_grants": access_grants,
         }
@@ -428,6 +434,7 @@ class OpenWebUIClient:
         clear_params: Optional[list[str]] = None,
         access_grants: Optional[list[dict]] = None,
         base_model_id: Optional[str] = None,
+        knowledge_ids: Optional[list[str]] = None,
         api_key: Optional[str] = None,
     ) -> dict:
         """Update a model while preserving fields required by the current API."""
@@ -436,13 +443,28 @@ class OpenWebUIClient:
         for key in clear_params or []:
             model_params.pop(key, None)
 
+        model_meta = {**(existing.get("meta") or {}), **(meta or {})}
+        if knowledge_ids is not None:
+            existing_knowledge = model_meta.get("knowledge")
+            direct_files = (
+                [
+                    item
+                    for item in existing_knowledge
+                    if isinstance(item, dict) and item.get("type") != "collection"
+                ]
+                if isinstance(existing_knowledge, list)
+                else []
+            )
+            model_meta["knowledge"] = direct_files + [
+                {"id": knowledge_id, "type": "collection"} for knowledge_id in knowledge_ids
+            ]
         data = {
             "id": existing["id"],
             "name": name if name is not None else existing["name"],
             "base_model_id": (
                 base_model_id if base_model_id is not None else existing.get("base_model_id")
             ),
-            "meta": {**(existing.get("meta") or {}), **(meta or {})},
+            "meta": model_meta,
             "params": model_params,
             "access_grants": (
                 access_grants if access_grants is not None else existing.get("access_grants")

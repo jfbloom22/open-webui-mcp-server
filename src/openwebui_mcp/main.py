@@ -195,6 +195,10 @@ class ModelCreateParam(BaseModel):
     temperature: Optional[float] = Field(default=None, description="Temperature (0.0-2.0)")
     max_tokens: Optional[int] = Field(default=None, description="Max tokens")
     tool_ids: Optional[list[str]] = Field(default=None, description="Open WebUI tool server IDs")
+    knowledge_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Knowledge base IDs attached to this model; model-level project knowledge",
+    )
     access_grants: Optional[list[dict[str, Any]]] = Field(
         default=None, description="Open WebUI access grants"
     )
@@ -247,6 +251,10 @@ class ModelUpdateParam(BaseModel):
         description="Stored model parameter keys to remove, such as temperature",
     )
     tool_ids: Optional[list[str]] = Field(default=None, description="Open WebUI tool server IDs")
+    knowledge_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Knowledge base IDs attached to this model; model-level project knowledge",
+    )
     access_grants: Optional[list[dict[str, Any]]] = Field(
         default=None, description="Open WebUI access grants"
     )
@@ -558,7 +566,11 @@ async def get_model(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
 
 @mcp.tool()
 async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]:
-    """Create a new custom model wrapper. ADMIN ONLY."""
+    """Create a model with model-level instructions, knowledge, and tools. ADMIN ONLY.
+
+    Folders organize chats only. They do not support instructions or knowledge
+    attachments in the current Open WebUI API.
+    """
     model_params = {}
     if params.system_prompt:
         model_params["system"] = params.system_prompt
@@ -575,6 +587,7 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
         meta=model_meta,
         params=model_params if model_params else None,
         access_grants=params.access_grants,
+        knowledge_ids=params.knowledge_ids,
         api_key=token,
     )
     return await audit_mutation(
@@ -587,6 +600,7 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
             "temperature",
             "max_tokens",
             "tool_ids",
+            "knowledge_ids",
             "access_grants",
         ],
         result,
@@ -596,7 +610,11 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
 
 @mcp.tool()
 async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]:
-    """Update a model's name, system prompt, or parameters."""
+    """Update model-level instructions, knowledge, tools, or parameters.
+
+    Folders organize chats only. They do not support instructions or knowledge
+    attachments in the current Open WebUI API.
+    """
     model_params = None
     if (
         params.system_prompt is not None
@@ -623,6 +641,7 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
         meta=model_meta,
         base_model_id=params.base_model_id,
         access_grants=params.access_grants,
+        knowledge_ids=params.knowledge_ids,
         api_key=token,
     )
     return await audit_mutation(
@@ -638,6 +657,7 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
                 "clear_params": params.clear_params,
                 "base_model_id": params.base_model_id,
                 "tool_ids": params.tool_ids,
+                "knowledge_ids": params.knowledge_ids,
                 "access_grants": params.access_grants,
             }.items()
             if value is not None
@@ -993,7 +1013,12 @@ async def get_folder(params: FolderIdParam, ctx: Context) -> dict[str, Any]:
 
 @mcp.tool()
 async def update_folder(params: FolderUpdateParam, ctx: Context) -> dict[str, Any]:
-    """Rename a folder."""
+    """Rename a chat folder; folders organize chats only.
+
+    Use ``update_model`` for model-level project instructions and knowledge.
+    Open WebUI does not support folder-level instructions or knowledge
+    attachments in its current API.
+    """
     return await get_client().update_folder(params.folder_id, params.name, get_user_token())
 
 
