@@ -585,8 +585,8 @@ async def get_model(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
 async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]:
     """Create a model with model-level instructions, knowledge, and tools. ADMIN ONLY.
 
-    Folders organize chats only. They do not support instructions or knowledge
-    attachments in the current Open WebUI API.
+    For folder/project-level instructions or knowledge, use ``create_folder``
+    or ``update_folder`` instead.
     """
     model_params = {}
     if params.system_prompt:
@@ -629,8 +629,9 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
 async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]:
     """Update model-level instructions, knowledge, tools, or parameters.
 
-    Folders organize chats only. They do not support instructions or knowledge
-    attachments in the current Open WebUI API.
+    For folder/project-level instructions or knowledge, use ``update_folder``
+    instead. Folder settings apply to chats in that folder; model settings are
+    reusable wherever the model is used.
     """
     model_params = None
     if (

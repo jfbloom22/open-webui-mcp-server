@@ -136,7 +136,7 @@ additional tools when needed.
 | `list_models` | List the authenticated user's effective models; filter with `kind=all`, `custom`, or `base` | Any |
 | `get_model` | Get model configuration | Any |
 | `create_model` | Create custom model with model-level instructions, knowledge collections, and tools | Admin |
-| `update_model` | Update model-level instructions, knowledge collections, tools, settings, and access grants while preserving the existing model form | Admin |
+| `update_model` | Update model-level instructions, knowledge collections, tools, settings, and access grants while preserving the existing model form | Admin; member profile, permission-scoped |
 | `update_model_access` | Set grants for a custom, provider, or base model | Admin |
 | `delete_model` | Delete a model | Admin |
 
@@ -156,6 +156,19 @@ concepts for folder/project-level configuration. `knowledge_ids` are Open WebUI
 Knowledge Base IDs. On update, collection references are replaced while direct
 file and note attachments are preserved. Folder settings apply to chats created
 in that folder; model settings apply wherever that model is used.
+
+### Folder / Project Management
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `list_folders` | List folders/projects visible to the authenticated user | Any |
+| `get_folder` | Read a folder/project and its instructions and attached knowledge | Any with access |
+| `create_folder` | Create a folder/project with optional instructions and knowledge collections | Any, subject to Open WebUI policy |
+| `update_folder` | Update folder/project instructions, knowledge collections, or name | Owner or write access |
+
+The member profile exposes these folder tools. The adapter forwards the
+authenticated Open WebUI session, so visibility and mutation permissions are
+enforced by Open WebUI for the current user. Membership alone does not imply
+write access to a shared folder.
 
 ### Knowledge Base Management
 | Tool | Description | Permission |
