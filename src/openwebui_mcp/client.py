@@ -425,12 +425,17 @@ class OpenWebUIClient:
         name: Optional[str] = None,
         meta: Optional[dict] = None,
         params: Optional[dict] = None,
+        clear_params: Optional[list[str]] = None,
         access_grants: Optional[list[dict]] = None,
         base_model_id: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> dict:
         """Update a model while preserving fields required by the current API."""
         existing = await self.get_model(model_id, api_key)
+        model_params = {**(existing.get("params") or {}), **(params or {})}
+        for key in clear_params or []:
+            model_params.pop(key, None)
+
         data = {
             "id": existing["id"],
             "name": name if name is not None else existing["name"],
@@ -438,7 +443,7 @@ class OpenWebUIClient:
                 base_model_id if base_model_id is not None else existing.get("base_model_id")
             ),
             "meta": {**(existing.get("meta") or {}), **(meta or {})},
-            "params": {**(existing.get("params") or {}), **(params or {})},
+            "params": model_params,
             "access_grants": (
                 access_grants if access_grants is not None else existing.get("access_grants")
             ),
