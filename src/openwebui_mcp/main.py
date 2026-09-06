@@ -197,6 +197,19 @@ class ModelCreateParam(BaseModel):
     base_model_id: str = Field(description="Base model ID")
     system_prompt: Optional[str] = Field(default=None, description="System prompt")
     temperature: Optional[float] = Field(default=None, description="Temperature (0.0-2.0)")
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description=(
+            "Reasoning effort, when supported by the base model (for example low, medium, or high)"
+        ),
+    )
+    top_p: Optional[float] = Field(default=None, description="Nucleus sampling threshold (0.0-1.0)")
+    frequency_penalty: Optional[float] = Field(
+        default=None, description="Frequency penalty (-2.0-2.0), when supported"
+    )
+    presence_penalty: Optional[float] = Field(
+        default=None, description="Presence penalty (-2.0-2.0), when supported"
+    )
     max_tokens: Optional[int] = Field(default=None, description="Max tokens")
     tool_ids: Optional[list[str]] = Field(default=None, description="Open WebUI tool server IDs")
     knowledge_ids: Optional[list[str]] = Field(
@@ -249,6 +262,19 @@ class ModelUpdateParam(BaseModel):
     name: Optional[str] = Field(default=None, description="New display name")
     system_prompt: Optional[str] = Field(default=None, description="New system prompt")
     temperature: Optional[float] = Field(default=None, description="New temperature")
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description="New reasoning effort, when supported by the base model",
+    )
+    top_p: Optional[float] = Field(
+        default=None, description="New nucleus sampling threshold (0.0-1.0)"
+    )
+    frequency_penalty: Optional[float] = Field(
+        default=None, description="New frequency penalty (-2.0-2.0), when supported"
+    )
+    presence_penalty: Optional[float] = Field(
+        default=None, description="New presence penalty (-2.0-2.0), when supported"
+    )
     max_tokens: Optional[int] = Field(default=None, description="New max tokens")
     clear_params: Optional[list[str]] = Field(
         default=None,
@@ -358,9 +384,7 @@ class ChatIdParam(BaseModel):
 
 class FolderCreateParam(BaseModel):
     name: str = Field(description="Folder name")
-    system_prompt: Optional[str] = Field(
-        default=None, description="Folder/project system prompt"
-    )
+    system_prompt: Optional[str] = Field(default=None, description="Folder/project system prompt")
     knowledge_ids: Optional[list[str]] = Field(
         default=None, description="Knowledge Base collection IDs attached to this folder/project"
     )
@@ -593,6 +617,14 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
         model_params["system"] = params.system_prompt
     if params.temperature is not None:
         model_params["temperature"] = params.temperature
+    if params.reasoning_effort is not None:
+        model_params["reasoning_effort"] = params.reasoning_effort
+    if params.top_p is not None:
+        model_params["top_p"] = params.top_p
+    if params.frequency_penalty is not None:
+        model_params["frequency_penalty"] = params.frequency_penalty
+    if params.presence_penalty is not None:
+        model_params["presence_penalty"] = params.presence_penalty
     if params.max_tokens is not None:
         model_params["max_tokens"] = params.max_tokens
     model_meta = {"toolIds": params.tool_ids} if params.tool_ids is not None else None
@@ -615,6 +647,10 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
             "base_model_id",
             "system_prompt",
             "temperature",
+            "reasoning_effort",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
             "max_tokens",
             "tool_ids",
             "knowledge_ids",
@@ -637,6 +673,10 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
     if (
         params.system_prompt is not None
         or params.temperature is not None
+        or params.reasoning_effort is not None
+        or params.top_p is not None
+        or params.frequency_penalty is not None
+        or params.presence_penalty is not None
         or params.max_tokens is not None
     ):
         model_params = {}
@@ -644,6 +684,14 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
             model_params["system"] = params.system_prompt
         if params.temperature is not None:
             model_params["temperature"] = params.temperature
+        if params.reasoning_effort is not None:
+            model_params["reasoning_effort"] = params.reasoning_effort
+        if params.top_p is not None:
+            model_params["top_p"] = params.top_p
+        if params.frequency_penalty is not None:
+            model_params["frequency_penalty"] = params.frequency_penalty
+        if params.presence_penalty is not None:
+            model_params["presence_penalty"] = params.presence_penalty
         if params.max_tokens is not None:
             model_params["max_tokens"] = params.max_tokens
     if params.system_prompt is not None:
@@ -671,6 +719,10 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
                 "name": params.name,
                 "system_prompt": params.system_prompt,
                 "temperature": params.temperature,
+                "reasoning_effort": params.reasoning_effort,
+                "top_p": params.top_p,
+                "frequency_penalty": params.frequency_penalty,
+                "presence_penalty": params.presence_penalty,
                 "max_tokens": params.max_tokens,
                 "clear_params": params.clear_params,
                 "base_model_id": params.base_model_id,
@@ -1075,9 +1127,7 @@ async def update_folder(params: FolderUpdateParam, ctx: Context) -> dict[str, An
         knowledge_ids=params.knowledge_ids,
         api_key=token,
     )
-    return await audit_mutation(
-        "folder.update", params.folder_id, changed_fields, result, token
-    )
+    return await audit_mutation("folder.update", params.folder_id, changed_fields, result, token)
 
 
 @mcp.tool()
