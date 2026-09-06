@@ -47,6 +47,20 @@ class OpenWebUIClient:
         """Encode a value used as one URL path segment."""
         return quote(value, safe="")
 
+    @staticmethod
+    def _raise_for_status(response: httpx.Response) -> None:
+        """Raise an HTTP error that includes the body but never request credentials."""
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            status = error.response.status_code if error.response is not None else "unknown"
+            body = error.response.text if error.response is not None else response.text
+            raise httpx.HTTPStatusError(
+                f"HTTP {status} error response: {body}",
+                request=error.request,
+                response=error.response,
+            ) from error
+
     async def request(
         self,
         method: str,
@@ -65,7 +79,7 @@ class OpenWebUIClient:
                 headers=headers,
                 **kwargs,
             )
-            response.raise_for_status()
+            self._raise_for_status(response)
 
             if response.headers.get("content-type", "").startswith("application/json"):
                 payload = response.json()
@@ -601,7 +615,7 @@ class OpenWebUIClient:
                     data={"metadata": json.dumps(metadata)},
                     files={"file": (path.name, file_handle, content_type)},
                 )
-            response.raise_for_status()
+            self._raise_for_status(response)
             payload = response.json()
             return payload if isinstance(payload, dict) else {"data": payload}
 
@@ -628,7 +642,7 @@ class OpenWebUIClient:
         data = {"process": "true", "process_in_background": "false"}
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(url, headers=headers, files=files, data=data)
-            response.raise_for_status()
+            self._raise_for_status(response)
             payload = response.json()
             return payload if isinstance(payload, dict) else {"data": payload}
 
@@ -840,9 +854,7 @@ class OpenWebUIClient:
         api_key: Optional[str] = None,
     ) -> dict:
         """Create a new tool."""
-        data = {"id": id, "name": name, "content": content}
-        if meta:
-            data["meta"] = meta
+        data = {"id": id, "name": name, "content": content, "meta": meta or {}}
         return await self.post("/api/v1/tools/create", api_key, json=data)
 
     async def update_tool(
@@ -853,14 +865,17 @@ class OpenWebUIClient:
         meta: Optional[dict] = None,
         api_key: Optional[str] = None,
     ) -> dict:
-        """Update a tool."""
-        data = {}
-        if name is not None:
-            data["name"] = name
-        if content is not None:
-            data["content"] = content
-        if meta is not None:
-            data["meta"] = meta
+        """Update a tool using the complete form required by Open WebUI."""
+        existing = await self.get_tool(tool_id, api_key)
+        existing_meta = existing.get("meta")
+        data = {
+            "id": existing.get("id", tool_id),
+            "name": name if name is not None else existing["name"],
+            "content": content if content is not None else existing["content"],
+            "meta": meta
+            if meta is not None
+            else (existing_meta if isinstance(existing_meta, dict) else {}),
+        }
         return await self.post(
             f"/api/v1/tools/id/{self._path_id(tool_id)}/update", api_key, json=data
         )

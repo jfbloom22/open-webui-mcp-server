@@ -357,6 +357,7 @@ class ToolCreateParam(BaseModel):
     id: str = Field(description="Tool ID (slug-format)")
     name: str = Field(description="Tool name")
     content: str = Field(description="Tool Python code")
+    meta: Optional[dict[str, Any]] = Field(default=None, description="Tool metadata")
 
 
 class ToolIdParam(BaseModel):
@@ -1017,7 +1018,7 @@ async def get_tool(params: ToolIdParam, ctx: Context) -> dict[str, Any]:
 async def create_tool(params: ToolCreateParam, ctx: Context) -> dict[str, Any]:
     """Create a new custom tool with Python code."""
     return await get_client().create_tool(
-        params.id, params.name, params.content, api_key=get_user_token()
+        params.id, params.name, params.content, meta=params.meta, api_key=get_user_token()
     )
 
 
