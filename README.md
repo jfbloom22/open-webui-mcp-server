@@ -135,8 +135,8 @@ additional tools when needed.
 |------|-------------|------------|
 | `list_models` | List the authenticated user's effective models; filter with `kind=all`, `custom`, or `base` | Any |
 | `get_model` | Get model configuration | Any |
-| `create_model` | Create custom model with model-level instructions, knowledge collections, and tools | Admin |
-| `update_model` | Update model-level instructions, knowledge collections, tools, settings, and access grants while preserving the existing model form | Admin; member profile, permission-scoped |
+| `create_model` | Create custom model with model-level instructions, knowledge collections, tools, and quick-start suggestions | Admin |
+| `update_model` | Update model-level instructions, knowledge collections, tools, settings, access grants, and quick-start suggestions while preserving the existing model form | Admin; member profile, permission-scoped |
 | `update_model_access` | Set grants for a custom, provider, or base model | Admin |
 | `delete_model` | Delete a model | Admin |
 
@@ -227,6 +227,8 @@ and chat mutations.
 | `list_tools` | List available tools | Any |
 | `list_functions` | List functions/filters | Any |
 | `get_system_config` | Get full system config via Open WebUI's `/api/v1/configs/export` endpoint | Admin |
+| `get_default_prompt_suggestions` | Get instance-wide fallback quick-start suggestions | Admin |
+| `update_default_prompt_suggestions` | Update instance-wide fallback quick-start suggestions | Admin |
 
 ## Development
 

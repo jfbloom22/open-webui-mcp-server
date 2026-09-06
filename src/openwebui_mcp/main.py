@@ -191,6 +191,21 @@ class GroupUserParam(BaseModel):
     user_id: str = Field(description="User ID to add/remove")
 
 
+class PromptSuggestionParam(BaseModel):
+    """Open WebUI's model prompt-suggestion shape."""
+
+    title: list[str] = Field(description="Two-part display title for the suggestion")
+    content: str = Field(description="Prompt text inserted when selected")
+
+
+class DefaultPromptSuggestionsParam(BaseModel):
+    """Payload for Open WebUI's instance-wide prompt suggestions."""
+
+    suggestions: list[PromptSuggestionParam] = Field(
+        description="Suggestions used when a model has no custom suggestions"
+    )
+
+
 class ModelCreateParam(BaseModel):
     id: str = Field(description="Model ID (slug-format)")
     name: str = Field(description="Display name")
@@ -215,6 +230,13 @@ class ModelCreateParam(BaseModel):
     knowledge_ids: Optional[list[str]] = Field(
         default=None,
         description="Knowledge base IDs attached to this model; model-level project knowledge",
+    )
+    suggestion_prompts: Optional[list[PromptSuggestionParam]] = Field(
+        default=None,
+        description=(
+            "Model-specific quick-start suggestions. Omit to use Open WebUI defaults. "
+            "These are not reusable slash-command prompts."
+        ),
     )
     access_grants: Optional[list[dict[str, Any]]] = Field(
         default=None, description="Open WebUI access grants"
@@ -284,6 +306,13 @@ class ModelUpdateParam(BaseModel):
     knowledge_ids: Optional[list[str]] = Field(
         default=None,
         description="Knowledge base IDs attached to this model; model-level project knowledge",
+    )
+    suggestion_prompts: Optional[list[PromptSuggestionParam]] = Field(
+        default=None,
+        description=(
+            "Replace this model's quick-start suggestions. Omit to preserve existing values. "
+            "These are not reusable slash-command prompts."
+        ),
     )
     access_grants: Optional[list[dict[str, Any]]] = Field(
         default=None, description="Open WebUI access grants"
@@ -619,7 +648,7 @@ async def get_model(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
 
 @mcp.tool()
 async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]:
-    """Create a model with model-level instructions, knowledge, and tools. ADMIN ONLY.
+    """Create a model with model-level instructions, knowledge, tools, and quick-start suggestions. ADMIN ONLY.
 
     For folder/project-level instructions or knowledge, use ``create_folder``
     or ``update_folder`` instead.
@@ -640,6 +669,11 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
     if params.max_tokens is not None:
         model_params["max_tokens"] = params.max_tokens
     model_meta = {"toolIds": params.tool_ids} if params.tool_ids is not None else None
+    if params.suggestion_prompts is not None:
+        model_meta = model_meta or {}
+        model_meta["suggestion_prompts"] = [
+            suggestion.model_dump() for suggestion in params.suggestion_prompts
+        ]
     token = get_user_token()
     result = await get_client().create_model(
         id=params.id,
@@ -666,6 +700,7 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
             "max_tokens",
             "tool_ids",
             "knowledge_ids",
+            "suggestion_prompts",
             "access_grants",
         ],
         result,
@@ -675,11 +710,12 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
 
 @mcp.tool()
 async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]:
-    """Update model-level instructions, knowledge, tools, or parameters.
+    """Update model-level instructions, knowledge, tools, parameters, or quick-start suggestions.
 
     For folder/project-level instructions or knowledge, use ``update_folder``
     instead. Folder settings apply to chats in that folder; model settings are
-    reusable wherever the model is used.
+    reusable wherever the model is used. For instance-wide default suggestions,
+    use ``update_default_prompt_suggestions`` instead.
     """
     model_params = None
     if (
@@ -710,6 +746,11 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
         model_params = model_params or {}
         model_params["system"] = params.system_prompt
     model_meta = {"toolIds": params.tool_ids} if params.tool_ids is not None else None
+    if params.suggestion_prompts is not None:
+        model_meta = model_meta or {}
+        model_meta["suggestion_prompts"] = [
+            suggestion.model_dump() for suggestion in params.suggestion_prompts
+        ]
     token = get_user_token()
     result = await get_client().update_model(
         params.model_id,
@@ -740,6 +781,7 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
                 "base_model_id": params.base_model_id,
                 "tool_ids": params.tool_ids,
                 "knowledge_ids": params.knowledge_ids,
+                "suggestion_prompts": params.suggestion_prompts,
                 "access_grants": params.access_grants,
             }.items()
             if value is not None
@@ -1339,6 +1381,37 @@ async def delete_channel_message(params: ChannelMessageIdParam, ctx: Context) ->
 async def get_system_config(ctx: Context) -> dict[str, Any]:
     """Get system configuration. ADMIN ONLY."""
     return await get_client().get_config(get_user_token())
+
+
+@mcp.tool()
+async def get_default_prompt_suggestions(ctx: Context) -> dict[str, Any]:
+    """Get instance-wide default quick-start suggestions. ADMIN ONLY.
+
+    These apply only when a model has no model-specific ``suggestion_prompts``.
+    They are different from reusable Workspace Prompts slash commands.
+    """
+    return await get_client().get_default_prompt_suggestions(get_user_token())
+
+
+@mcp.tool()
+async def update_default_prompt_suggestions(
+    params: DefaultPromptSuggestionsParam, ctx: Context
+) -> dict[str, Any]:
+    """Update instance-wide default quick-start suggestions. ADMIN ONLY.
+
+    This changes the defaults for all models without custom suggestions. To
+    change one model's suggestions, use ``update_model.suggestion_prompts``.
+    """
+    token = get_user_token()
+    suggestions = [suggestion.model_dump() for suggestion in params.suggestions]
+    result = await get_client().set_default_prompt_suggestions(suggestions, token)
+    return await audit_mutation(
+        "prompt_suggestions.defaults.update",
+        "ui.prompt_suggestions",
+        ["suggestions"],
+        result,
+        token,
+    )
 
 
 @mcp.tool()

@@ -1027,6 +1027,24 @@ class OpenWebUIClient:
         """Get the full system configuration (admin only)."""
         return await self.get("/api/v1/configs/export", api_key)
 
+    async def get_default_prompt_suggestions(self, api_key: Optional[str] = None) -> dict:
+        """Get instance-wide prompt suggestions from the configuration export."""
+        config = await self.get_config(api_key)
+        suggestions = config.get("ui.prompt_suggestions")
+        if suggestions is None and isinstance(config.get("ui"), dict):
+            suggestions = config["ui"].get("prompt_suggestions")
+        return {"suggestions": suggestions or []}
+
+    async def set_default_prompt_suggestions(
+        self, suggestions: list[dict], api_key: Optional[str] = None
+    ) -> dict:
+        """Set instance-wide prompt suggestions (admin only)."""
+        return await self.post(
+            "/api/v1/configs/suggestions",
+            api_key,
+            json={"suggestions": suggestions},
+        )
+
     async def export_config(self, api_key: Optional[str] = None) -> dict:
         """Export full configuration (admin only)."""
         return await self.get("/api/v1/configs/export", api_key)

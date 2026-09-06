@@ -83,6 +83,8 @@ def test_model_tool_schemas_expose_kind_filters_and_access_grants() -> None:
     assert "name" in access_schema["properties"]
     assert "access_grants" in create_schema["properties"]
     assert "access_grants" in update_schema["properties"]
+    assert "suggestion_prompts" in create_schema["properties"]
+    assert "suggestion_prompts" in update_schema["properties"]
     for schema in (create_schema, update_schema):
         assert {
             "reasoning_effort",
@@ -148,6 +150,39 @@ async def test_model_handlers_forward_sampling_and_reasoning_parameters(
         "frequency_penalty": -0.1,
         "presence_penalty": 0.0,
     }
+
+
+@pytest.mark.asyncio
+async def test_model_handlers_forward_model_suggestion_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Mock()
+    client.create_model = AsyncMock(return_value={"id": "new-model"})
+    client.update_model = AsyncMock(return_value={"id": "existing-model"})
+    monkeypatch.setattr(main, "get_client", lambda: client)
+    monkeypatch.setenv("MCP_PROFILE", "local")
+    monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
+    suggestions = [
+        main.PromptSuggestionParam(title=["Reflect", "on today"], content="Reflect now")
+    ]
+
+    await main.create_model.fn(
+        main.ModelCreateParam(
+            id="new-model",
+            name="New Model",
+            base_model_id="gpt-5",
+            suggestion_prompts=suggestions,
+        ),
+        Mock(),
+    )
+    await main.update_model.fn(
+        main.ModelUpdateParam(model_id="existing-model", suggestion_prompts=suggestions),
+        Mock(),
+    )
+
+    expected = [{"title": ["Reflect", "on today"], "content": "Reflect now"}]
+    assert client.create_model.await_args.kwargs["meta"] == {"suggestion_prompts": expected}
+    assert client.update_model.await_args.kwargs["meta"] == {"suggestion_prompts": expected}
 
 
 def test_knowledge_access_tool_schema_exposes_native_grants() -> None:

@@ -437,6 +437,24 @@ async def test_request_wraps_json_lists_for_mcp_structured_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_prompt_suggestions_use_export_and_current_update_route() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_config = AsyncMock(return_value={"ui.prompt_suggestions": [{"content": "Hi"}]})
+    client.post = AsyncMock(return_value={"data": [{"content": "Updated"}]})
+
+    assert await client.get_default_prompt_suggestions("token") == {
+        "suggestions": [{"content": "Hi"}]
+    }
+    await client.set_default_prompt_suggestions([{"content": "Updated"}], "token")
+
+    client.post.assert_awaited_once_with(
+        "/api/v1/configs/suggestions",
+        "token",
+        json={"suggestions": [{"content": "Updated"}]},
+    )
+
+
+@pytest.mark.asyncio
 async def test_update_model_preserves_required_fields_and_merges_parameters() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.get_model = AsyncMock(
