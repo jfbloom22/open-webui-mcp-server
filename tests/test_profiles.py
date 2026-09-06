@@ -59,8 +59,9 @@ async def test_configure_member_profile_removes_unapproved_tools(
     registered = {"list_models": Mock(), "update_model": Mock(), "delete_model": Mock()}
     get_tools = AsyncMock(return_value=registered)
     remove_tool = Mock()
-    with patch.object(main.mcp, "get_tools", get_tools), patch.object(
-        main.mcp, "remove_tool", remove_tool
+    with (
+        patch.object(main.mcp, "get_tools", get_tools),
+        patch.object(main.mcp, "remove_tool", remove_tool),
     ):
         await main.configure_profile()
 
@@ -75,13 +76,68 @@ def test_model_tool_schemas_expose_kind_filters_and_access_grants() -> None:
 
     assert list_schema["properties"]["kind"]["default"] == "all"
     assert list_schema["properties"]["kind"]["enum"] == ["all", "custom", "base"]
-    assert set(
-        ("provider", "connection_id", "query", "model_id", "display_name", "status")
-    ) <= set(list_schema["properties"])
+    assert set(("provider", "connection_id", "query", "model_id", "display_name", "status")) <= set(
+        list_schema["properties"]
+    )
     assert "access_grants" in access_schema["properties"]
     assert "name" in access_schema["properties"]
     assert "access_grants" in create_schema["properties"]
     assert "access_grants" in update_schema["properties"]
+    for schema in (create_schema, update_schema):
+        assert {
+            "reasoning_effort",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+        } <= set(schema["properties"])
+
+
+@pytest.mark.asyncio
+async def test_model_handlers_forward_sampling_and_reasoning_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Mock()
+    client.create_model = AsyncMock(return_value={"id": "new-model"})
+    client.update_model = AsyncMock(return_value={"id": "existing-model"})
+    monkeypatch.setattr(main, "get_client", lambda: client)
+    monkeypatch.setenv("MCP_PROFILE", "local")
+    monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
+
+    await main.create_model.fn(
+        main.ModelCreateParam(
+            id="new-model",
+            name="New Model",
+            base_model_id="gpt-5.6-terra",
+            reasoning_effort="high",
+            top_p=0.8,
+            frequency_penalty=0.1,
+            presence_penalty=0.2,
+        ),
+        Mock(),
+    )
+    await main.update_model.fn(
+        main.ModelUpdateParam(
+            model_id="existing-model",
+            reasoning_effort="low",
+            top_p=0.9,
+            frequency_penalty=-0.1,
+            presence_penalty=0.0,
+        ),
+        Mock(),
+    )
+
+    assert client.create_model.await_args.kwargs["params"] == {
+        "reasoning_effort": "high",
+        "top_p": 0.8,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.2,
+    }
+    assert client.update_model.await_args.kwargs["params"] == {
+        "reasoning_effort": "low",
+        "top_p": 0.9,
+        "frequency_penalty": -0.1,
+        "presence_penalty": 0.0,
+    }
 
 
 def test_knowledge_access_tool_schema_exposes_native_grants() -> None:
