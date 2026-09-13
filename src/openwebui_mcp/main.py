@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from fastmcp import Context, FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .client import OpenWebUIClient
 
@@ -84,7 +84,7 @@ MEMBER_PROFILE_TOOLS = {
     "search_files",
     "get_file",
     "get_file_content",
-    "add_knowledge_text",
+    "add_knowledge_file",
     "list_memories",
     "query_memories",
     "add_memory",
@@ -375,13 +375,51 @@ class FileContentParam(BaseModel):
     content: str = Field(description="New text content")
 
 
-class KnowledgeTextParam(BaseModel):
-    filename: str = Field(description="Versioned .md or .txt filename")
-    content: str = Field(description="Text or Markdown content to add")
+class KnowledgeFileParam(BaseModel):
+    filename: Optional[str] = Field(
+        default=None,
+        description="Filename for uploaded content (required for content or content_base64)",
+    )
+    content: Optional[str] = Field(
+        default=None,
+        description="Markdown or text content to upload (mutually exclusive with other sources)",
+    )
+    content_base64: Optional[str] = Field(
+        default=None,
+        description="Base64-encoded binary upload (mutually exclusive with other sources)",
+    )
+    file_id: Optional[str] = Field(
+        default=None,
+        description="Existing Open WebUI file ID to attach, e.g. from chat <attached_files>",
+    )
     knowledge_id: Optional[str] = Field(
         default=None,
-        description="Optional knowledge base ID to attach the new file to",
+        description="Knowledge base ID to attach the file to (required for file_id)",
     )
+    content_type: Optional[str] = Field(
+        default=None,
+        description="Optional MIME type for uploaded content",
+    )
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "KnowledgeFileParam":
+        has_content = self.content is not None
+        has_base64 = self.content_base64 is not None
+        has_file_id = self.file_id is not None
+        sources = sum((has_content, has_base64, has_file_id))
+        if sources != 1:
+            raise ValueError("Provide exactly one of content, content_base64, or file_id")
+        if has_file_id and not (self.file_id and self.file_id.strip()):
+            raise ValueError("file_id must not be empty")
+        if has_file_id and not self.knowledge_id:
+            raise ValueError("knowledge_id is required when using file_id")
+        if not has_file_id and (not self.filename or not self.filename.strip()):
+            raise ValueError("filename is required when uploading content")
+        if has_content and not self.content.strip():
+            raise ValueError("content must not be empty")
+        if has_base64 and not self.content_base64.strip():
+            raise ValueError("content_base64 must not be empty")
+        return self
 
 
 class PromptCreateParam(BaseModel):
@@ -927,31 +965,43 @@ async def get_file_content(params: FileIdParam, ctx: Context) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def add_knowledge_text(params: KnowledgeTextParam, ctx: Context) -> dict[str, Any]:
-    """Add a new Markdown or text file to your knowledge, without replacing existing files."""
-    filename = params.filename.strip()
-    if not filename.lower().endswith((".md", ".markdown", ".txt")):
-        raise ValueError("Only .md, .markdown, and .txt files may be added by this profile")
-    if not params.content.strip():
-        raise ValueError("Knowledge content must not be empty")
-    if len(params.content.encode("utf-8")) > 10 * 1024 * 1024:
-        raise ValueError("Knowledge content must be 10 MiB or smaller")
+async def add_knowledge_file(params: KnowledgeFileParam, ctx: Context) -> dict[str, Any]:
+    """Add a file to a knowledge collection.
+
+    Provide exactly one source:
+    - content: markdown or text in the call (max 10 MiB)
+    - content_base64: binary file bytes as base64 (max 10 MiB decoded)
+    - file_id: an already-uploaded Open WebUI file, e.g. from <attached_files> in chat
+
+    For file_id, knowledge_id is required. For uploads, filename is required.
+    """
+    if params.content is not None:
+        filename = params.filename.strip()
+        if not filename.lower().endswith((".md", ".markdown", ".txt")):
+            raise ValueError("Text uploads must use .md, .markdown, or .txt filenames")
 
     token = get_user_token()
-    uploaded = await get_client().upload_text_file(filename, params.content, token)
-    file_id = uploaded.get("id") or uploaded.get("file_id")
-    if not file_id:
-        raise RuntimeError("Open WebUI did not return an uploaded file ID")
+    result = await get_client().add_knowledge_file(
+        filename=params.filename,
+        content=params.content,
+        content_base64=params.content_base64,
+        file_id=params.file_id,
+        knowledge_id=params.knowledge_id,
+        content_type=params.content_type,
+        api_key=token,
+    )
 
-    result: dict[str, Any] = {"file": uploaded}
-    if params.knowledge_id:
-        result["knowledge"] = await get_client().add_file_to_knowledge(
-            params.knowledge_id, file_id, token
-        )
+    audit_fields = ["knowledge_id"]
+    if params.file_id:
+        audit_fields.append("file_id")
+    else:
+        audit_fields.extend(["filename", "content" if params.content else "content_base64"])
+
+    resource_id = params.knowledge_id or result.get("file_id") or params.file_id or "unknown"
     return await audit_mutation(
-        "knowledge.text.add",
-        params.knowledge_id or file_id,
-        ["filename", "content"] + (["knowledge_id"] if params.knowledge_id else []),
+        "knowledge.file.add",
+        resource_id,
+        audit_fields,
         result,
         token,
     )

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Replaced `add_knowledge_text` with unified `add_knowledge_file` supporting
+  text uploads, base64 binary uploads, and attaching existing Open WebUI files
+  by `file_id`.
+
 ## 0.2.0 - 2026-09-05
 
 ### Added

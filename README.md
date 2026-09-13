@@ -189,6 +189,12 @@ the registered member connection's filter with `update_tool_server_config`.
 | `update_knowledge_base` | Update knowledge base name/description | Owner |
 | `update_knowledge_access` | Replace knowledge base access grants | Owner, write access, or admin |
 | `delete_knowledge_base` | Delete knowledge base | Owner |
+| `add_knowledge_file` | Upload text/binary content or attach an existing file to a knowledge base | Member profile |
+
+`add_knowledge_file` accepts exactly one source: `content` (markdown/text),
+`content_base64` (binary), or `file_id` (already uploaded, e.g. from chat
+`<attached_files>`). Uploads are capped at 10 MiB. `knowledge_id` is required
+for `file_id` attaches.
 
 `update_knowledge_access` sends Open WebUI's exact access form,
 `{"access_grants": [...]}`, to the dedicated knowledge access endpoint. Grant

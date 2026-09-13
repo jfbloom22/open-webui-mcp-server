@@ -340,6 +340,86 @@ async def test_upload_text_file_forwards_session_token_and_multipart_payload() -
 
 
 @pytest.mark.asyncio
+async def test_add_knowledge_file_uploads_text_and_attaches_to_knowledge() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client._upload_file_bytes = AsyncMock(return_value={"id": "file-1"})
+    client.add_file_to_knowledge = AsyncMock(return_value={"id": "kb-1", "files": []})
+
+    result = await client.add_knowledge_file(
+        filename="notes.md",
+        content="# Notes",
+        knowledge_id="kb-1",
+        api_key="session-token",
+    )
+
+    client._upload_file_bytes.assert_awaited_once_with(
+        "notes.md", b"# Notes", "text/markdown", "session-token"
+    )
+    client.add_file_to_knowledge.assert_awaited_once_with("kb-1", "file-1", "session-token")
+    assert result["mode"] == "upload"
+    assert result["file_id"] == "file-1"
+    assert result["knowledge"] == {"id": "kb-1", "files": []}
+
+
+@pytest.mark.asyncio
+async def test_add_knowledge_file_uploads_base64_without_knowledge_link() -> None:
+    import base64
+
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client._upload_file_bytes = AsyncMock(return_value={"id": "file-2"})
+    client.add_file_to_knowledge = AsyncMock()
+
+    payload = base64.b64encode(b"%PDF-1.4").decode()
+    result = await client.add_knowledge_file(
+        filename="packet.pdf",
+        content_base64=payload,
+        api_key="session-token",
+    )
+
+    client._upload_file_bytes.assert_awaited_once_with(
+        "packet.pdf", b"%PDF-1.4", "application/pdf", "session-token"
+    )
+    client.add_file_to_knowledge.assert_not_called()
+    assert result["mode"] == "upload"
+    assert result["file_id"] == "file-2"
+
+
+@pytest.mark.asyncio
+async def test_add_knowledge_file_attaches_existing_file_id() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.add_file_to_knowledge = AsyncMock(return_value={"id": "kb-1"})
+
+    result = await client.add_knowledge_file(
+        file_id="file-9",
+        knowledge_id="kb-1",
+        api_key="session-token",
+    )
+
+    client.add_file_to_knowledge.assert_awaited_once_with("kb-1", "file-9", "session-token")
+    assert result == {"mode": "attach", "file_id": "file-9", "knowledge": {"id": "kb-1"}}
+
+
+@pytest.mark.asyncio
+async def test_add_knowledge_file_requires_single_source() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+
+    with pytest.raises(ValueError, match="exactly one"):
+        await client.add_knowledge_file(
+            filename="notes.md",
+            content="# Notes",
+            content_base64="bm90ZXM=",
+        )
+
+
+@pytest.mark.asyncio
+async def test_add_knowledge_file_requires_knowledge_id_for_attach() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+
+    with pytest.raises(ValueError, match="knowledge_id is required"):
+        await client.add_knowledge_file(file_id="file-9")
+
+
+@pytest.mark.asyncio
 async def test_add_user_to_group_uses_user_ids_payload() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.post = AsyncMock(return_value={"id": "group-1"})
