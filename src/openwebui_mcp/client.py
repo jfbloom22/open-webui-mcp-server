@@ -665,13 +665,21 @@ class OpenWebUIClient:
         data: bytes,
         content_type: str,
         api_key: Optional[str] = None,
+        knowledge_id: Optional[str] = None,
     ) -> dict:
         """Upload file bytes and process synchronously."""
         url = f"{self.base_url}/api/v1/files/"
         token = api_key or self.api_key
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        metadata = {"knowledge_id": knowledge_id} if knowledge_id else {}
         files = {"file": (filename, data, content_type)}
-        form = {"process": "true", "process_in_background": "false"}
+        form = {
+            "metadata": json.dumps(metadata),
+            "process": "true",
+            "process_in_background": "false",
+        }
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(url, headers=headers, files=files, data=form)
             self._raise_for_status(response)
@@ -734,16 +742,20 @@ class OpenWebUIClient:
         if len(data) > 10 * 1024 * 1024:
             raise ValueError("uploaded content must be 10 MiB or smaller")
 
-        uploaded = await self._upload_file_bytes(name, data, resolved_type, api_key)
+        uploaded = await self._upload_file_bytes(
+            name, data, resolved_type, api_key, knowledge_id=knowledge_id
+        )
         uploaded_id = uploaded.get("id") or uploaded.get("file_id")
         if not uploaded_id:
             raise RuntimeError("Open WebUI did not return an uploaded file ID")
 
-        result: dict[str, Any] = {"mode": "upload", "file": uploaded, "file_id": uploaded_id}
+        result: dict[str, Any] = {
+            "mode": "upload",
+            "file": uploaded,
+            "file_id": uploaded_id,
+        }
         if knowledge_id:
-            result["knowledge"] = await self.add_file_to_knowledge(
-                knowledge_id, uploaded_id, api_key
-            )
+            result["knowledge_id"] = knowledge_id
         return result
 
     async def add_file_to_knowledge(

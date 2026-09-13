@@ -8,6 +8,12 @@
   text uploads, base64 binary uploads, and attaching existing Open WebUI files
   by `file_id`.
 
+### Fixed
+
+- Uploads that include `knowledge_id` now pass `metadata.knowledge_id` on file
+  creation so Open WebUI links synchronously instead of racing a second attach
+  call.
+
 ## 0.2.0 - 2026-09-05
 
 ### Added

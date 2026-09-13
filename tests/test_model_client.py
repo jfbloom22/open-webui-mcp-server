@@ -333,17 +333,24 @@ async def test_upload_text_file_forwards_session_token_and_multipart_payload() -
 
     assert result == {"id": "file-1"}
     assert fake.args == ("https://webui.example/api/v1/files/",)
-    assert fake.kwargs["headers"] == {"Authorization": "Bearer session-token"}
-    assert fake.kwargs["data"] == {"process": "true", "process_in_background": "false"}
+    assert fake.kwargs["headers"] == {
+        "Accept": "application/json",
+        "Authorization": "Bearer session-token",
+    }
+    assert fake.kwargs["data"] == {
+        "metadata": "{}",
+        "process": "true",
+        "process_in_background": "false",
+    }
     assert fake.kwargs["files"]["file"][0] == "update.md"
     assert fake.kwargs["files"]["file"][1] == b"# Update"
 
 
 @pytest.mark.asyncio
-async def test_add_knowledge_file_uploads_text_and_attaches_to_knowledge() -> None:
+async def test_add_knowledge_file_uploads_text_and_links_via_metadata() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client._upload_file_bytes = AsyncMock(return_value={"id": "file-1"})
-    client.add_file_to_knowledge = AsyncMock(return_value={"id": "kb-1", "files": []})
+    client.add_file_to_knowledge = AsyncMock()
 
     result = await client.add_knowledge_file(
         filename="notes.md",
@@ -353,12 +360,16 @@ async def test_add_knowledge_file_uploads_text_and_attaches_to_knowledge() -> No
     )
 
     client._upload_file_bytes.assert_awaited_once_with(
-        "notes.md", b"# Notes", "text/markdown", "session-token"
+        "notes.md",
+        b"# Notes",
+        "text/markdown",
+        "session-token",
+        knowledge_id="kb-1",
     )
-    client.add_file_to_knowledge.assert_awaited_once_with("kb-1", "file-1", "session-token")
+    client.add_file_to_knowledge.assert_not_called()
     assert result["mode"] == "upload"
     assert result["file_id"] == "file-1"
-    assert result["knowledge"] == {"id": "kb-1", "files": []}
+    assert result["knowledge_id"] == "kb-1"
 
 
 @pytest.mark.asyncio
@@ -377,7 +388,11 @@ async def test_add_knowledge_file_uploads_base64_without_knowledge_link() -> Non
     )
 
     client._upload_file_bytes.assert_awaited_once_with(
-        "packet.pdf", b"%PDF-1.4", "application/pdf", "session-token"
+        "packet.pdf",
+        b"%PDF-1.4",
+        "application/pdf",
+        "session-token",
+        knowledge_id=None,
     )
     client.add_file_to_knowledge.assert_not_called()
     assert result["mode"] == "upload"
