@@ -11,7 +11,8 @@ def test_member_profile_allowlist_excludes_admin_surfaces() -> None:
     assert "get_folder" in main.MEMBER_PROFILE_TOOLS
     assert "create_folder" in main.MEMBER_PROFILE_TOOLS
     assert "update_folder" in main.MEMBER_PROFILE_TOOLS
-    assert "add_knowledge_text" in main.MEMBER_PROFILE_TOOLS
+    assert "add_knowledge_file" in main.MEMBER_PROFILE_TOOLS
+    assert "add_knowledge_text" not in main.MEMBER_PROFILE_TOOLS
     assert "update_knowledge_access" in main.MEMBER_PROFILE_TOOLS
     assert "list_users" not in main.MEMBER_PROFILE_TOOLS
     assert "get_tool_servers" not in main.MEMBER_PROFILE_TOOLS

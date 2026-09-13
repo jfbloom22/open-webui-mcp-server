@@ -1,5 +1,6 @@
 """Open WebUI API client using a locally configured management credential."""
 
+import base64
 import json
 import mimetypes
 import os
@@ -658,20 +659,92 @@ class OpenWebUIClient:
         """Get extracted text content from a file."""
         return await self.get(f"/api/v1/files/{self._path_id(file_id)}/data/content", api_key)
 
+    async def _upload_file_bytes(
+        self,
+        filename: str,
+        data: bytes,
+        content_type: str,
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """Upload file bytes and process synchronously."""
+        url = f"{self.base_url}/api/v1/files/"
+        token = api_key or self.api_key
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        files = {"file": (filename, data, content_type)}
+        form = {"process": "true", "process_in_background": "false"}
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, files=files, data=form)
+            self._raise_for_status(response)
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {"data": payload}
+
     async def upload_text_file(
         self, filename: str, content: str, api_key: Optional[str] = None
     ) -> dict:
         """Upload a UTF-8 text file and let Open WebUI process it synchronously."""
-        url = f"{self.base_url}/api/v1/files/"
-        token = api_key or self.api_key
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        files = {"file": (filename, content.encode("utf-8"), "text/markdown")}
-        data = {"process": "true", "process_in_background": "false"}
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, headers=headers, files=files, data=data)
-            self._raise_for_status(response)
-            payload = response.json()
-            return payload if isinstance(payload, dict) else {"data": payload}
+        return await self._upload_file_bytes(
+            filename, content.encode("utf-8"), "text/markdown", api_key
+        )
+
+    async def add_knowledge_file(
+        self,
+        *,
+        filename: Optional[str] = None,
+        content: Optional[str] = None,
+        content_base64: Optional[str] = None,
+        file_id: Optional[str] = None,
+        knowledge_id: Optional[str] = None,
+        content_type: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """Upload or attach a file to Open WebUI, optionally linking it to a knowledge base."""
+        sources = sum(1 for value in (content, content_base64, file_id) if value is not None)
+        if sources != 1:
+            raise ValueError("Provide exactly one of content, content_base64, or file_id")
+
+        if file_id:
+            if not knowledge_id:
+                raise ValueError("knowledge_id is required when using file_id")
+            return {
+                "mode": "attach",
+                "file_id": file_id,
+                "knowledge": await self.add_file_to_knowledge(knowledge_id, file_id, api_key),
+            }
+
+        if not filename or not filename.strip():
+            raise ValueError("filename is required when uploading content")
+
+        name = filename.strip()
+        if content is not None:
+            if not content.strip():
+                raise ValueError("content must not be empty")
+            data = content.encode("utf-8")
+            resolved_type = content_type or mimetypes.guess_type(name)[0] or "text/markdown"
+        else:
+            try:
+                data = base64.b64decode(content_base64, validate=True)
+            except Exception as exc:
+                raise ValueError("content_base64 must be valid base64") from exc
+            if not data:
+                raise ValueError("content_base64 must not be empty")
+            resolved_type = (
+                content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+            )
+
+        if len(data) > 10 * 1024 * 1024:
+            raise ValueError("uploaded content must be 10 MiB or smaller")
+
+        uploaded = await self._upload_file_bytes(name, data, resolved_type, api_key)
+        uploaded_id = uploaded.get("id") or uploaded.get("file_id")
+        if not uploaded_id:
+            raise RuntimeError("Open WebUI did not return an uploaded file ID")
+
+        result: dict[str, Any] = {"mode": "upload", "file": uploaded, "file_id": uploaded_id}
+        if knowledge_id:
+            result["knowledge"] = await self.add_file_to_knowledge(
+                knowledge_id, uploaded_id, api_key
+            )
+        return result
 
     async def add_file_to_knowledge(
         self, knowledge_id: str, file_id: str, api_key: Optional[str] = None
