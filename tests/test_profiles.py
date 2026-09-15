@@ -186,6 +186,37 @@ async def test_model_handlers_forward_model_suggestion_prompts(
     assert client.update_model.await_args.kwargs["meta"] == {"suggestion_prompts": expected}
 
 
+@pytest.mark.asyncio
+async def test_model_handlers_forward_default_feature_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Mock()
+    client.create_model = AsyncMock(return_value={"id": "new-model"})
+    client.update_model = AsyncMock(return_value={"id": "existing-model"})
+    monkeypatch.setattr(main, "get_client", lambda: client)
+    monkeypatch.setenv("MCP_PROFILE", "local")
+    monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
+
+    await main.create_model.fn(
+        main.ModelCreateParam(
+            id="new-model",
+            name="New Model",
+            base_model_id="gpt-5",
+            default_feature_ids=["web_search"],
+        ),
+        Mock(),
+    )
+    await main.update_model.fn(
+        main.ModelUpdateParam(model_id="existing-model", default_feature_ids=[]),
+        Mock(),
+    )
+
+    assert client.create_model.await_args.kwargs["meta"] == {
+        "defaultFeatureIds": ["web_search"]
+    }
+    assert client.update_model.await_args.kwargs["meta"] == {"defaultFeatureIds": []}
+
+
 def test_knowledge_access_tool_schema_exposes_native_grants() -> None:
     schema = main.KnowledgeAccessParam.model_json_schema()
 

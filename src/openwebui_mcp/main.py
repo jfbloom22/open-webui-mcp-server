@@ -238,6 +238,13 @@ class ModelCreateParam(BaseModel):
             "These are not reusable slash-command prompts."
         ),
     )
+    default_feature_ids: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Features enabled by default in new chats, such as 'web_search', "
+            "'image_generation', or 'code_interpreter'. Use [] to clear them."
+        ),
+    )
     access_grants: Optional[list[dict[str, Any]]] = Field(
         default=None, description="Open WebUI access grants"
     )
@@ -312,6 +319,14 @@ class ModelUpdateParam(BaseModel):
         description=(
             "Replace this model's quick-start suggestions. Omit to preserve existing values. "
             "These are not reusable slash-command prompts."
+        ),
+    )
+    default_feature_ids: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Features enabled by default in new chats, such as 'web_search', "
+            "'image_generation', or 'code_interpreter'. Omit to preserve existing values; "
+            "use [] to clear them."
         ),
     )
     access_grants: Optional[list[dict[str, Any]]] = Field(
@@ -712,6 +727,9 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
         model_meta["suggestion_prompts"] = [
             suggestion.model_dump() for suggestion in params.suggestion_prompts
         ]
+    if params.default_feature_ids is not None:
+        model_meta = model_meta or {}
+        model_meta["defaultFeatureIds"] = params.default_feature_ids
     token = get_user_token()
     result = await get_client().create_model(
         id=params.id,
@@ -739,6 +757,7 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
             "tool_ids",
             "knowledge_ids",
             "suggestion_prompts",
+            "default_feature_ids",
             "access_grants",
         ],
         result,
@@ -789,6 +808,9 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
         model_meta["suggestion_prompts"] = [
             suggestion.model_dump() for suggestion in params.suggestion_prompts
         ]
+    if params.default_feature_ids is not None:
+        model_meta = model_meta or {}
+        model_meta["defaultFeatureIds"] = params.default_feature_ids
     token = get_user_token()
     result = await get_client().update_model(
         params.model_id,
@@ -820,6 +842,7 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
                 "tool_ids": params.tool_ids,
                 "knowledge_ids": params.knowledge_ids,
                 "suggestion_prompts": params.suggestion_prompts,
+                "default_feature_ids": params.default_feature_ids,
                 "access_grants": params.access_grants,
             }.items()
             if value is not None

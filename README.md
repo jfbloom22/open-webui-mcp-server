@@ -150,12 +150,17 @@ separate admin-only `update_model_access` tool accepts Open WebUI's
 when creating a provider/base access record. It is not available in the member
 profile.
 
-`create_model` and `update_model` accept `system_prompt` and `knowledge_ids` for
-model-level configuration. `create_folder` and `update_folder` accept the same
-concepts for folder/project-level configuration. `knowledge_ids` are Open WebUI
-Knowledge Base IDs. On update, collection references are replaced while direct
-file and note attachments are preserved. Folder settings apply to chats created
-in that folder; model settings apply wherever that model is used.
+`create_model` and `update_model` accept `system_prompt`, `knowledge_ids`, and
+`default_feature_ids` for model-level configuration. `default_feature_ids` maps
+to Open WebUI's `meta.defaultFeatureIds` and controls which built-in features
+are enabled by default in new chats. For example, pass `["web_search"]` to
+enable the Web Search default. Pass an empty list to clear the defaults.
+
+`knowledge_ids` are Open WebUI Knowledge Base IDs. On update, collection
+references are replaced while direct file and note attachments are preserved.
+`create_folder` and `update_folder` accept the same concepts for
+folder/project-level configuration. Folder settings apply to chats created in
+that folder; model settings apply wherever that model is used.
 
 ### Folder / Project Management
 | Tool | Description | Permission |

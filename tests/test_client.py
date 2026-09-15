@@ -492,6 +492,38 @@ async def test_update_model_preserves_required_fields_and_merges_parameters() ->
 
 
 @pytest.mark.asyncio
+async def test_update_model_preserves_existing_metadata_when_setting_default_features() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_model = AsyncMock(
+        return_value={
+            "id": "research-assistant",
+            "name": "Research Assistant",
+            "base_model_id": "gpt-5",
+            "meta": {
+                "description": "Existing description",
+                "capabilities": {"web_search": True},
+            },
+            "params": {},
+            "access_grants": [],
+            "is_active": True,
+        }
+    )
+    client.post = AsyncMock(return_value={"id": "research-assistant"})
+
+    await client.update_model(
+        "research-assistant",
+        meta={"defaultFeatureIds": ["web_search"]},
+        api_key="token",
+    )
+
+    assert client.post.call_args.kwargs["json"]["meta"] == {
+        "description": "Existing description",
+        "capabilities": {"web_search": True},
+        "defaultFeatureIds": ["web_search"],
+    }
+
+
+@pytest.mark.asyncio
 async def test_update_prompt_uses_id_and_preserves_required_fields() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.get_prompt = AsyncMock(
