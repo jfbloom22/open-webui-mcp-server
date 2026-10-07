@@ -269,6 +269,16 @@ class ModelIdParam(BaseModel):
     model_id: str = Field(description="Model ID")
 
 
+class ModelVisibilityParam(BaseModel):
+    model_id: str = Field(description="Provider base or Workspace model ID")
+    visible: bool = Field(description="Whether the model appears in the selector")
+
+
+class ModelEnabledParam(BaseModel):
+    model_id: str = Field(description="Provider base or Workspace model ID")
+    enabled: bool = Field(description="Whether the model can be used")
+
+
 class ModelListParam(BaseModel):
     kind: Literal["all", "custom", "base"] = Field(
         default="all",
@@ -368,6 +378,19 @@ class ToolServerConfigUpdateParam(BaseModel):
     )
     description: Optional[str] = Field(
         default=None, description="Optional replacement tool server description"
+    )
+
+
+class ConnectionModelIdsUpdateParam(BaseModel):
+    connection_index: int = Field(ge=0, description="OpenAI-compatible provider connection index")
+    expected_base_url: str = Field(
+        description="Current URL for the selected connection, used to guard against stale indexes"
+    )
+    expected_model_ids: list[str] = Field(
+        description="Current Model IDs; reject the update if the list has changed"
+    )
+    model_ids: list[str] = Field(
+        description="Replacement Model IDs; an empty list enables provider discovery"
     )
 
 
@@ -846,6 +869,48 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
             }.items()
             if value is not None
         ],
+        result,
+        token,
+    )
+
+
+@mcp.tool()
+async def set_model_visibility(
+    params: ModelVisibilityParam, ctx: Context
+) -> dict[str, Any]:
+    """Set selector visibility for a base or Workspace model. ADMIN ONLY.
+
+    Hiding a model does not disable it. Newly discovered provider models with no
+    saved record are admin-only by Open WebUI's access-control behavior.
+    """
+    token = get_user_token()
+    result = await get_client().set_model_visibility(params.model_id, params.visible, token)
+    if not result.get("changed"):
+        return result
+    return await audit_mutation(
+        "model.visibility.set",
+        params.model_id,
+        ["meta.hidden"],
+        result,
+        token,
+    )
+
+
+@mcp.tool()
+async def set_model_enabled(params: ModelEnabledParam, ctx: Context) -> dict[str, Any]:
+    """Enable or disable a base or Workspace model. ADMIN ONLY.
+
+    Disabling makes the model unusable instance-wide. Use set_model_visibility
+    when the model should remain available as the base for Workspace models.
+    """
+    token = get_user_token()
+    result = await get_client().set_model_enabled(params.model_id, params.enabled, token)
+    if not result.get("changed"):
+        return result
+    return await audit_mutation(
+        "model.enabled.set",
+        params.model_id,
+        ["is_active"],
         result,
         token,
     )
@@ -1502,6 +1567,45 @@ async def get_banners(ctx: Context) -> dict[str, Any]:
 async def get_models_config(ctx: Context) -> dict[str, Any]:
     """Get default models configuration. ADMIN ONLY."""
     return await get_client().get_models_config(get_user_token())
+
+
+@mcp.tool()
+async def get_model_connections(ctx: Context) -> dict[str, Any]:
+    """List provider connection IDs, discovery settings, and Model IDs. ADMIN ONLY.
+
+    API keys and other credential fields are never returned.
+    """
+    return await get_client().get_model_connections(get_user_token())
+
+
+@mcp.tool()
+async def set_connection_model_ids(
+    params: ConnectionModelIdsUpdateParam, ctx: Context
+) -> dict[str, Any]:
+    """Replace one provider's Model IDs list. ADMIN ONLY.
+
+    Pass an empty list to use provider discovery. Expected URL and current Model
+    IDs reject stale caller input. Other connection settings and secrets are
+    preserved and excluded from the result. Open WebUI does not provide atomic
+    compare-and-swap against edits made by other clients.
+    """
+    token = get_user_token()
+    result = await get_client().set_connection_model_ids(
+        params.connection_index,
+        params.expected_base_url,
+        params.expected_model_ids,
+        params.model_ids,
+        token,
+    )
+    if not result.get("changed", True):
+        return result
+    return await audit_mutation(
+        "provider_connection.model_ids.update",
+        f"connection:{params.connection_index}",
+        ["model_ids"],
+        result,
+        token,
+    )
 
 
 @mcp.tool()

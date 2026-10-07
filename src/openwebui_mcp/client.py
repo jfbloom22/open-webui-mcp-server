@@ -1,5 +1,6 @@
 """Open WebUI API client using a locally configured management credential."""
 
+import asyncio
 import base64
 import json
 import mimetypes
@@ -29,6 +30,7 @@ class OpenWebUIClient:
         """
         self.base_url = (base_url or os.getenv("OPENWEBUI_URL", "")).rstrip("/")
         self.api_key = api_key or os.getenv("OPENWEBUI_API_KEY", "")
+        self._provider_config_lock = asyncio.Lock()
 
         if not self.base_url:
             raise ValueError("Open WebUI URL required. Set OPENWEBUI_URL env var or pass base_url.")
@@ -475,6 +477,136 @@ class OpenWebUIClient:
         if access_grants is not None:
             data["access_grants"] = access_grants
         return await self.post("/api/v1/models/model/update", api_key, json=data)
+
+    async def _get_model_record_or_none(
+        self, model_id: str, api_key: Optional[str] = None
+    ) -> Optional[dict[str, Any]]:
+        """Read a saved model record, returning None when a provider model is unregistered."""
+        try:
+            model = await self.get_model(model_id, api_key)
+        except httpx.HTTPStatusError as error:
+            if error.response is not None and error.response.status_code == 404:
+                return None
+            raise
+        return model if model and model.get("id") else None
+
+    async def _get_base_model(self, model_id: str, api_key: Optional[str] = None) -> dict[str, Any]:
+        """Find an exact provider model in the admin-only base-model catalog."""
+        response = await self.get("/api/models/base", api_key)
+        models = response.get("data", [])
+        for model in models:
+            if isinstance(model, dict) and model.get("id") == model_id:
+                return model
+        raise ValueError(f"Provider base model {model_id!r} was not found")
+
+    @staticmethod
+    def _model_state_result(model_id: str, model: Optional[dict[str, Any]], changed: bool) -> dict:
+        meta = (model or {}).get("meta") or {}
+        return {
+            "id": model_id,
+            "name": (model or {}).get("name"),
+            "visible": not bool(meta.get("hidden", False)),
+            "enabled": bool((model or {}).get("is_active", True)),
+            "changed": changed,
+        }
+
+    async def _save_model_state(
+        self,
+        model_id: str,
+        record: dict[str, Any],
+        *,
+        create: bool,
+        api_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Write the full Open WebUI model form so unrelated fields survive."""
+        data = {
+            "id": record.get("id", model_id),
+            "name": record.get("name", model_id),
+            "base_model_id": record.get("base_model_id"),
+            "meta": record.get("meta") or {},
+            "params": record.get("params") or {},
+            "access_grants": record.get("access_grants") or [],
+            "is_active": record.get("is_active", True),
+        }
+        endpoint = "/api/v1/models/create" if create else "/api/v1/models/model/update"
+        return await self.post(endpoint, api_key, json=data)
+
+    async def set_model_visibility(
+        self, model_id: str, visible: bool, api_key: Optional[str] = None
+    ) -> dict:
+        """Set a model's selector visibility, creating a base-model override if needed."""
+        record = await self._get_model_record_or_none(model_id, api_key)
+        if record is None:
+            if visible:
+                base_model = await self._get_base_model(model_id, api_key)
+                return self._model_state_result(
+                    model_id,
+                    {"name": base_model.get("name", model_id), "is_active": True},
+                    changed=False,
+                )
+            base_model = await self._get_base_model(model_id, api_key)
+            record = {
+                "id": model_id,
+                "name": base_model.get("name", model_id),
+                "base_model_id": None,
+                "meta": {"hidden": not visible},
+                "params": {},
+                "access_grants": [],
+                "is_active": True,
+            }
+            create = True
+        else:
+            current_visible = not bool((record.get("meta") or {}).get("hidden", False))
+            if current_visible == visible:
+                return self._model_state_result(model_id, record, changed=False)
+            record = dict(record)
+            record["meta"] = {**(record.get("meta") or {}), "hidden": not visible}
+            create = False
+
+        await self._save_model_state(model_id, record, create=create, api_key=api_key)
+        # Return only state fields, never prompts, parameters, or access-grant details.
+        state = self._model_state_result(model_id, record, changed=True)
+        state["visible"] = visible
+        state["enabled"] = bool(record.get("is_active", True))
+        return state
+
+    async def set_model_enabled(
+        self, model_id: str, enabled: bool, api_key: Optional[str] = None
+    ) -> dict:
+        """Set whether a model can be used, creating a base-model override if needed."""
+        record = await self._get_model_record_or_none(model_id, api_key)
+        if record is None:
+            if enabled:
+                base_model = await self._get_base_model(model_id, api_key)
+                return self._model_state_result(
+                    model_id,
+                    {"name": base_model.get("name", model_id), "is_active": True},
+                    changed=False,
+                )
+            base_model = await self._get_base_model(model_id, api_key)
+            record = {
+                "id": model_id,
+                "name": base_model.get("name", model_id),
+                "base_model_id": None,
+                "meta": {},
+                "params": {},
+                "access_grants": [],
+                "is_active": False,
+            }
+            create = True
+        else:
+            current_enabled = bool(record.get("is_active", True))
+            if current_enabled == enabled:
+                return self._model_state_result(model_id, record, changed=False)
+            record = dict(record)
+            record["is_active"] = enabled
+            create = False
+
+        await self._save_model_state(model_id, record, create=create, api_key=api_key)
+        state = self._model_state_result(model_id, record, changed=True)
+        state["visible"] = not bool((record.get("meta") or {}).get("hidden", False))
+        state["enabled"] = enabled
+        return state
 
     async def delete_model(self, model_id: str, api_key: Optional[str] = None) -> dict:
         """Delete a model (admin only)."""
@@ -1149,6 +1281,126 @@ class OpenWebUIClient:
     async def get_models_config(self, api_key: Optional[str] = None) -> dict:
         """Get default models configuration (admin only)."""
         return await self.get("/api/v1/configs/models", api_key)
+
+    async def _get_connections_config(self, api_key: Optional[str] = None) -> dict[str, Any]:
+        """Read provider settings from config export; callers must redact secrets."""
+        config = await self.get("/api/v1/configs/export", api_key)
+        if not isinstance(config.get("openai.api_base_urls"), list):
+            raise ValueError("Open WebUI returned an invalid provider connections configuration")
+        return config
+
+    @staticmethod
+    def _connection_projection(config: dict[str, Any]) -> dict[str, Any]:
+        """Return connector metadata without API keys or unreviewed configuration fields."""
+        base_urls = config.get("openai.api_base_urls", [])
+        api_configs = config.get("openai.api_configs", {})
+        if not isinstance(api_configs, dict):
+            api_configs = {}
+        connections = []
+        for index, base_url in enumerate(base_urls):
+            if not isinstance(base_url, str):
+                continue
+            item = api_configs.get(str(index), {})
+            if not isinstance(item, dict):
+                item = {}
+            model_ids = item.get("model_ids", [])
+            if not isinstance(model_ids, list):
+                model_ids = []
+            connections.append(
+                {
+                    "connection_index": index,
+                    "base_url": base_url,
+                    "enabled": item.get("enable", True),
+                    "model_ids": [value for value in model_ids if isinstance(value, str)],
+                    "prefix_id": item.get("prefix_id"),
+                    "provider": item.get("provider"),
+                }
+            )
+        return {"connections": connections}
+
+    async def get_model_connections(self, api_key: Optional[str] = None) -> dict[str, Any]:
+        """List configured OpenAI-compatible connections without exposing API keys."""
+        return self._connection_projection(await self._get_connections_config(api_key))
+
+    async def set_connection_model_ids(
+        self,
+        connection_index: int,
+        expected_base_url: str,
+        expected_model_ids: list[str],
+        model_ids: list[str],
+        api_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Replace one connection's Model IDs while preserving all other config and secrets."""
+        if connection_index < 0:
+            raise ValueError("connection_index must be zero or greater")
+        if not isinstance(expected_model_ids, list) or not isinstance(model_ids, list):
+            raise ValueError("expected_model_ids and model_ids must be lists")
+
+        normalized_ids = []
+        for model_id in model_ids:
+            if not isinstance(model_id, str) or not model_id.strip():
+                raise ValueError("model_ids entries must be non-empty strings")
+            normalized_ids.append(model_id.strip())
+        if len(set(normalized_ids)) != len(normalized_ids):
+            raise ValueError("model_ids cannot contain duplicate entries")
+
+        # Serialize updates through this MCP client. Open WebUI exposes no CAS or
+        # revision token, so writes from other clients can still race this sequence.
+        async with self._provider_config_lock:
+            config = await self._get_connections_config(api_key)
+            base_urls = config["openai.api_base_urls"]
+            if connection_index >= len(base_urls):
+                raise ValueError(f"Provider connection index {connection_index} was not found")
+            actual_base_url = base_urls[connection_index]
+            if actual_base_url != expected_base_url:
+                raise ValueError(
+                    "Provider connection URL changed; re-read configuration before updating"
+                )
+
+            existing_configs = config.get("openai.api_configs", {})
+            if not isinstance(existing_configs, dict):
+                raise ValueError("Open WebUI returned invalid per-connection settings")
+            api_configs = dict(existing_configs)
+            key = str(connection_index)
+            current = api_configs.get(key, {})
+            if not isinstance(current, dict):
+                raise ValueError("Open WebUI returned invalid per-connection settings")
+            current_ids = current.get("model_ids", [])
+            if not isinstance(current_ids, list):
+                current_ids = []
+            current_ids = [value for value in current_ids if isinstance(value, str)]
+            if current_ids != expected_model_ids:
+                raise ValueError(
+                    "Provider Model IDs changed; re-read configuration before updating"
+                )
+            if current_ids == normalized_ids:
+                return {**self._connection_projection(config), "changed": False}
+
+            api_configs[key] = {**current, "model_ids": normalized_ids}
+            try:
+                await self.post(
+                    "/api/v1/configs/import",
+                    api_key,
+                    json={"config": {"openai.api_configs": api_configs}},
+                )
+            except httpx.HTTPStatusError as error:
+                status = error.response.status_code if error.response is not None else "unknown"
+                # The upstream may echo submitted configuration on failure; never surface it.
+                raise RuntimeError(
+                    f"Open WebUI rejected the provider Model IDs update (HTTP {status})"
+                ) from None
+
+            verified = await self._get_connections_config(api_key)
+            verified_configs = verified.get("openai.api_configs", {})
+            verified_entry = (
+                verified_configs.get(key, {}) if isinstance(verified_configs, dict) else {}
+            )
+            verified_ids = (
+                verified_entry.get("model_ids", []) if isinstance(verified_entry, dict) else []
+            )
+            if verified_ids != normalized_ids:
+                raise RuntimeError("Open WebUI did not persist the requested provider Model IDs")
+            return {**self._connection_projection(verified), "changed": True}
 
     async def set_models_config(
         self,

@@ -16,6 +16,177 @@ async def test_get_model_uses_query_parameter_for_slash_safe_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_model_connections_redacts_provider_credentials() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(
+        return_value={
+            "openai.api_base_urls": ["https://api.example/v1"],
+            "openai.api_keys": ["must-not-escape"],
+            "openai.api_configs": {
+                "0": {
+                    "enable": True,
+                    "model_ids": ["model-a"],
+                    "prefix_id": "provider",
+                    "provider": "openai",
+                    "extra_secret": "also-redacted",
+                }
+            },
+        }
+    )
+
+    result = await client.get_model_connections("token")
+
+    assert result == {
+        "connections": [
+            {
+                "connection_index": 0,
+                "base_url": "https://api.example/v1",
+                "enabled": True,
+                "model_ids": ["model-a"],
+                "prefix_id": "provider",
+                "provider": "openai",
+            }
+        ]
+    }
+    assert "must-not-escape" not in str(result)
+    assert "also-redacted" not in str(result)
+    client.get.assert_awaited_once_with("/api/v1/configs/export", "token")
+
+
+@pytest.mark.asyncio
+async def test_set_connection_model_ids_preserves_secrets_and_other_settings() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    before = {
+        "openai.enable": True,
+        "openai.api_base_urls": ["https://api.example/v1", "https://other.example/v1"],
+        "openai.api_keys": ["secret-one", "secret-two"],
+        "openai.api_configs": {
+            "0": {"enable": True, "model_ids": ["old-model"], "prefix_id": "one"},
+            "1": {"enable": True, "model_ids": ["keep-model"], "prefix_id": "two"},
+        },
+    }
+    after = {
+        **before,
+        "openai.api_configs": {
+            "0": {"enable": True, "model_ids": ["new-model"], "prefix_id": "one"},
+            "1": {"enable": True, "model_ids": ["keep-model"], "prefix_id": "two"},
+        },
+    }
+    client.get = AsyncMock(side_effect=[before, after])
+    client.post = AsyncMock(return_value={"OPENAI_API_KEYS": ["must-not-escape"]})
+
+    result = await client.set_connection_model_ids(
+        0,
+        "https://api.example/v1",
+        ["old-model"],
+        ["new-model"],
+        "token",
+    )
+
+    posted = client.post.await_args.kwargs["json"]
+    assert set(posted) == {"config"}
+    assert set(posted["config"]) == {"openai.api_configs"}
+    assert posted["config"]["openai.api_configs"]["0"]["model_ids"] == ["new-model"]
+    assert posted["config"]["openai.api_configs"]["1"] == before["openai.api_configs"]["1"]
+    assert "secret-one" not in str(result)
+    assert "must-not-escape" not in str(result)
+    assert result["changed"] is True
+    assert client.post.await_args.args == ("/api/v1/configs/import", "token")
+    assert client.get.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_set_connection_model_ids_rejects_stale_target_before_write() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(
+        return_value={
+            "openai.api_base_urls": ["https://api.example/v1"],
+            "openai.api_keys": ["secret"],
+            "openai.api_configs": {"0": {"model_ids": ["changed"]}},
+        }
+    )
+    client.post = AsyncMock()
+
+    with pytest.raises(ValueError, match="Model IDs changed"):
+        await client.set_connection_model_ids(
+            0, "https://api.example/v1", ["old"], ["new"], "token"
+        )
+
+    client.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hide_unregistered_base_model_creates_visibility_override() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_model = AsyncMock(return_value=None)
+    client.get = AsyncMock(return_value={"data": [{"id": "gpt-new", "name": "GPT New"}]})
+    client.post = AsyncMock(return_value={"id": "gpt-new", "is_active": True})
+
+    result = await client.set_model_visibility("gpt-new", visible=False, api_key="token")
+
+    assert client.post.await_args.args == ("/api/v1/models/create", "token")
+    assert client.post.await_args.kwargs["json"] == {
+        "id": "gpt-new",
+        "name": "GPT New",
+        "base_model_id": None,
+        "meta": {"hidden": True},
+        "params": {},
+        "access_grants": [],
+        "is_active": True,
+    }
+    assert result == {
+        "id": "gpt-new",
+        "name": "GPT New",
+        "visible": False,
+        "enabled": True,
+        "changed": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_model_visibility_preserves_existing_fields() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_model = AsyncMock(
+        return_value={
+            "id": "custom-model",
+            "name": "Curated model",
+            "base_model_id": "gpt-5",
+            "meta": {"hidden": False, "description": "Keep me"},
+            "params": {"system": "Existing prompt", "temperature": 0.4},
+            "access_grants": [{"principal_type": "group", "principal_id": "team"}],
+            "is_active": True,
+        }
+    )
+    client.post = AsyncMock(return_value={"id": "custom-model"})
+
+    result = await client.set_model_visibility("custom-model", visible=False, api_key="token")
+
+    payload = client.post.await_args.kwargs["json"]
+    assert payload["meta"] == {"hidden": True, "description": "Keep me"}
+    assert payload["params"] == {"system": "Existing prompt", "temperature": 0.4}
+    assert payload["access_grants"] == [
+        {"principal_type": "group", "principal_id": "team"}
+    ]
+    assert payload["is_active"] is True
+    assert result["visible"] is False
+
+
+@pytest.mark.asyncio
+async def test_disable_unregistered_base_model_creates_inactive_override() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_model = AsyncMock(return_value=None)
+    client.get = AsyncMock(return_value={"data": [{"id": "gpt-new", "name": "GPT New"}]})
+    client.post = AsyncMock(return_value={"id": "gpt-new", "is_active": False})
+
+    result = await client.set_model_enabled("gpt-new", enabled=False, api_key="token")
+
+    assert client.post.await_args.args == ("/api/v1/models/create", "token")
+    assert client.post.await_args.kwargs["json"]["is_active"] is False
+    assert result["enabled"] is False
+    assert result["visible"] is True
+
+
+@pytest.mark.asyncio
 async def test_list_models_normalizes_user_scoped_response_and_classifies_custom_models() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.get = AsyncMock(

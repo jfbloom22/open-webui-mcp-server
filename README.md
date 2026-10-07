@@ -8,7 +8,8 @@ List tools return compact indexes containing identifiers and discovery metadata.
 
 - **User Management**: List users, inspect user details, and update roles
 - **Group Management**: Create and update groups, and manage membership
-- **Model Management**: Discover user-scoped provider, base, and custom models; create custom models, update settings, and manage access grants
+- **Model Management**: Discover user-scoped provider, base, and custom models; create custom models, update settings, visibility, enabled state, and access grants
+- **Provider Discovery**: Read and safely update OpenAI-compatible connection Model IDs without exposing provider API keys
 - **Knowledge Base Management**: Create, list, update, and share knowledge bases
 - **File Management**: Upload local files, optionally linking them to a knowledge base, and manage file content
 - **Chat Management**: List and view chats
@@ -148,6 +149,8 @@ additional tools when needed.
 | `get_model` | Get model configuration | Any |
 | `create_model` | Create custom model with model-level instructions, knowledge collections, tools, and quick-start suggestions | Admin |
 | `update_model` | Update model-level instructions, knowledge collections, tools, settings, access grants, and quick-start suggestions while preserving the existing model form | Admin; member profile, permission-scoped |
+| `set_model_visibility` | Hide or show a base or Workspace model in the selector without changing whether it can be used | Admin |
+| `set_model_enabled` | Enable or disable a base or Workspace model instance-wide | Admin |
 | `update_model_access` | Set grants for a custom, provider, or base model | Admin |
 | `delete_model` | Delete a model | Admin |
 
@@ -160,6 +163,18 @@ separate admin-only `update_model_access` tool accepts Open WebUI's
 `access_grants` for custom, provider, and base model IDs; `name` may be needed
 when creating a provider/base access record. It is not available in the member
 profile.
+
+New provider models are discovered from the configured provider endpoint. Open
+WebUI keeps unconfigured base models admin-only when model access control is
+enabled. Sharing a Workspace model with a user or group also requires granting
+access to its underlying base model. Promotion, deprecation decisions, and
+custom-model upgrades remain manual; this MCP server does not schedule catalog
+maintenance.
+
+`set_model_visibility` writes `meta.hidden`. For a provider model without a
+saved record, it creates the metadata override used by Open WebUI's own Models
+workspace. `set_model_enabled` changes `is_active`, which controls whether the
+model can be used. Both tools are idempotent and preserve existing model fields.
 
 `create_model` and `update_model` accept `system_prompt` and `knowledge_ids` for
 model-level configuration. `create_folder` and `update_folder` accept the same
@@ -190,6 +205,22 @@ write access to a shared folder.
 The filter is applied by Open WebUI after it discovers tools from the server.
 When a member profile gains a tool, update both the MCP profile allowlist and
 the registered member connection's filter with `update_tool_server_config`.
+
+### Provider Model Discovery
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `get_model_connections` | List OpenAI-compatible connection indexes, URLs, enabled state, prefixes, and Model IDs; credentials are redacted | Admin |
+| `set_connection_model_ids` | Replace one connection's Model IDs, preserving other settings and secrets | Admin |
+
+`set_connection_model_ids` requires the current connection URL and Model IDs
+as preconditions, so stale caller inputs are rejected. Writes from this MCP
+client are serialized. Open WebUI provides no atomic compare-and-swap, so a
+simultaneous edit from another client can still race the read-modify-write. An
+empty replacement list enables provider `/models` discovery. The tool reads
+Open WebUI's config export and imports only `openai.api_configs`, so it does
+not submit API keys or replace unrelated settings. API keys are never returned
+in MCP results, audit notes, or error messages.
+Member profiles do not expose these connector tools.
 
 ### Knowledge Base Management
 | Tool | Description | Permission |
