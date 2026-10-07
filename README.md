@@ -216,10 +216,10 @@ the registered member connection's filter with `update_tool_server_config`.
 as preconditions, so stale caller inputs are rejected. Writes from this MCP
 client are serialized. Open WebUI provides no atomic compare-and-swap, so a
 simultaneous edit from another client can still race the read-modify-write. An
-empty replacement list enables provider `/models` discovery. The update is
-read-modify-write against Open WebUI's complete OpenAI-compatible provider
-configuration, but API keys are never returned in MCP results, audit notes, or
-error messages.
+empty replacement list enables provider `/models` discovery. The tool reads
+Open WebUI's config export and imports only `openai.api_configs`, so it does
+not submit API keys or replace unrelated settings. API keys are never returned
+in MCP results, audit notes, or error messages.
 Member profiles do not expose these connector tools.
 
 ### Knowledge Base Management

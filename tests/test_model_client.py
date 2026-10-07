@@ -20,9 +20,9 @@ async def test_get_model_connections_redacts_provider_credentials() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.get = AsyncMock(
         return_value={
-            "OPENAI_API_BASE_URLS": ["https://api.example/v1"],
-            "OPENAI_API_KEYS": ["must-not-escape"],
-            "OPENAI_API_CONFIGS": {
+            "openai.api_base_urls": ["https://api.example/v1"],
+            "openai.api_keys": ["must-not-escape"],
+            "openai.api_configs": {
                 "0": {
                     "enable": True,
                     "model_ids": ["model-a"],
@@ -50,24 +50,24 @@ async def test_get_model_connections_redacts_provider_credentials() -> None:
     }
     assert "must-not-escape" not in str(result)
     assert "also-redacted" not in str(result)
-    client.get.assert_awaited_once_with("/api/v1/openai/config", "token")
+    client.get.assert_awaited_once_with("/api/v1/configs/export", "token")
 
 
 @pytest.mark.asyncio
 async def test_set_connection_model_ids_preserves_secrets_and_other_settings() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     before = {
-        "ENABLE_OPENAI_API": True,
-        "OPENAI_API_BASE_URLS": ["https://api.example/v1", "https://other.example/v1"],
-        "OPENAI_API_KEYS": ["secret-one", "secret-two"],
-        "OPENAI_API_CONFIGS": {
+        "openai.enable": True,
+        "openai.api_base_urls": ["https://api.example/v1", "https://other.example/v1"],
+        "openai.api_keys": ["secret-one", "secret-two"],
+        "openai.api_configs": {
             "0": {"enable": True, "model_ids": ["old-model"], "prefix_id": "one"},
             "1": {"enable": True, "model_ids": ["keep-model"], "prefix_id": "two"},
         },
     }
     after = {
         **before,
-        "OPENAI_API_CONFIGS": {
+        "openai.api_configs": {
             "0": {"enable": True, "model_ids": ["new-model"], "prefix_id": "one"},
             "1": {"enable": True, "model_ids": ["keep-model"], "prefix_id": "two"},
         },
@@ -84,13 +84,14 @@ async def test_set_connection_model_ids_preserves_secrets_and_other_settings() -
     )
 
     posted = client.post.await_args.kwargs["json"]
-    assert posted["OPENAI_API_KEYS"] == ["secret-one", "secret-two"]
-    assert posted["OPENAI_API_CONFIGS"]["0"]["model_ids"] == ["new-model"]
-    assert posted["OPENAI_API_CONFIGS"]["1"] == before["OPENAI_API_CONFIGS"]["1"]
+    assert set(posted) == {"config"}
+    assert set(posted["config"]) == {"openai.api_configs"}
+    assert posted["config"]["openai.api_configs"]["0"]["model_ids"] == ["new-model"]
+    assert posted["config"]["openai.api_configs"]["1"] == before["openai.api_configs"]["1"]
     assert "secret-one" not in str(result)
     assert "must-not-escape" not in str(result)
     assert result["changed"] is True
-    assert client.post.await_args.args == ("/api/v1/openai/config/update", "token")
+    assert client.post.await_args.args == ("/api/v1/configs/import", "token")
     assert client.get.await_count == 2
 
 
@@ -99,9 +100,9 @@ async def test_set_connection_model_ids_rejects_stale_target_before_write() -> N
     client = OpenWebUIClient(base_url="https://webui.example")
     client.get = AsyncMock(
         return_value={
-            "OPENAI_API_BASE_URLS": ["https://api.example/v1"],
-            "OPENAI_API_KEYS": ["secret"],
-            "OPENAI_API_CONFIGS": {"0": {"model_ids": ["changed"]}},
+            "openai.api_base_urls": ["https://api.example/v1"],
+            "openai.api_keys": ["secret"],
+            "openai.api_configs": {"0": {"model_ids": ["changed"]}},
         }
     )
     client.post = AsyncMock()

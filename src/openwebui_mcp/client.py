@@ -1283,17 +1283,17 @@ class OpenWebUIClient:
         return await self.get("/api/v1/configs/models", api_key)
 
     async def _get_connections_config(self, api_key: Optional[str] = None) -> dict[str, Any]:
-        """Read connector configuration for internal updates; callers must redact keys."""
-        config = await self.get("/api/v1/openai/config", api_key)
-        if not isinstance(config.get("OPENAI_API_BASE_URLS"), list):
+        """Read provider settings from config export; callers must redact secrets."""
+        config = await self.get("/api/v1/configs/export", api_key)
+        if not isinstance(config.get("openai.api_base_urls"), list):
             raise ValueError("Open WebUI returned an invalid provider connections configuration")
         return config
 
     @staticmethod
     def _connection_projection(config: dict[str, Any]) -> dict[str, Any]:
         """Return connector metadata without API keys or unreviewed configuration fields."""
-        base_urls = config.get("OPENAI_API_BASE_URLS", [])
-        api_configs = config.get("OPENAI_API_CONFIGS", {})
+        base_urls = config.get("openai.api_base_urls", [])
+        api_configs = config.get("openai.api_configs", {})
         if not isinstance(api_configs, dict):
             api_configs = {}
         connections = []
@@ -1348,7 +1348,7 @@ class OpenWebUIClient:
         # revision token, so writes from other clients can still race this sequence.
         async with self._provider_config_lock:
             config = await self._get_connections_config(api_key)
-            base_urls = config["OPENAI_API_BASE_URLS"]
+            base_urls = config["openai.api_base_urls"]
             if connection_index >= len(base_urls):
                 raise ValueError(f"Provider connection index {connection_index} was not found")
             actual_base_url = base_urls[connection_index]
@@ -1357,9 +1357,10 @@ class OpenWebUIClient:
                     "Provider connection URL changed; re-read configuration before updating"
                 )
 
-            api_configs = config.setdefault("OPENAI_API_CONFIGS", {})
-            if not isinstance(api_configs, dict):
+            existing_configs = config.get("openai.api_configs", {})
+            if not isinstance(existing_configs, dict):
                 raise ValueError("Open WebUI returned invalid per-connection settings")
+            api_configs = dict(existing_configs)
             key = str(connection_index)
             current = api_configs.get(key, {})
             if not isinstance(current, dict):
@@ -1377,7 +1378,11 @@ class OpenWebUIClient:
 
             api_configs[key] = {**current, "model_ids": normalized_ids}
             try:
-                await self.post("/api/v1/openai/config/update", api_key, json=config)
+                await self.post(
+                    "/api/v1/configs/import",
+                    api_key,
+                    json={"config": {"openai.api_configs": api_configs}},
+                )
             except httpx.HTTPStatusError as error:
                 status = error.response.status_code if error.response is not None else "unknown"
                 # The upstream may echo submitted configuration on failure; never surface it.
@@ -1386,7 +1391,7 @@ class OpenWebUIClient:
                 ) from None
 
             verified = await self._get_connections_config(api_key)
-            verified_configs = verified.get("OPENAI_API_CONFIGS", {})
+            verified_configs = verified.get("openai.api_configs", {})
             verified_entry = (
                 verified_configs.get(key, {}) if isinstance(verified_configs, dict) else {}
             )
