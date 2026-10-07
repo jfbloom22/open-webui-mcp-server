@@ -53,6 +53,27 @@ async def test_http_middleware_forwards_session_token_for_scoped_profile(
 
 
 @pytest.mark.asyncio
+async def test_http_health_endpoint_is_live_without_mcp_auth() -> None:
+    messages = []
+
+    async def app(scope, receive, send):
+        raise AssertionError("health endpoint should be handled by middleware")
+
+    async def send(message):
+        messages.append(message)
+
+    middleware = main.AuthMiddleware(app, mcp_token="secret")
+    await middleware(
+        {"type": "http", "path": "/healthz", "method": "GET", "headers": []},
+        Mock(),
+        send,
+    )
+
+    assert messages[0]["status"] == 200
+    assert messages[1]["body"] == b"ok"
+
+
+@pytest.mark.asyncio
 async def test_configure_member_profile_removes_unapproved_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

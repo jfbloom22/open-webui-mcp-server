@@ -59,24 +59,31 @@ podman build -t openwebui-mcp:local .
 podman run --interactive --rm --env-file .env openwebui-mcp:local
 ```
 
-Each local MCP client may start its own stdio container. The server has no local
-shared state, so concurrent clients can independently manage the same Open
-WebUI instance.
+Use stdio for a single local client process. For multiple simultaneous Codex
+chats or Cursor sessions, use the shared HTTP service below instead of
+configuring each client to start its own container.
 
-### Optional loopback HTTP transport
+### Shared local HTTP transport
 
-HTTP is reserved for a future persistent local service. Set these values in
-your local `.env` before starting it:
+For multiple local clients, run one long-lived HTTP container and connect each
+Codex or Cursor session to that server. Do not start a separate HTTP container
+from every client's stdio command. Publish the container port only on the
+loopback interface, and set these values in the local `.env`:
 
 ```bash
 export MCP_TRANSPORT=http
-export MCP_HTTP_HOST=127.0.0.1
-export MCP_HTTP_PORT=8001
+export MCP_HTTP_HOST=0.0.0.0
+export MCP_HTTP_PORT=8000
 export MCP_HTTP_TOKEN=generate-a-long-random-token
 ```
 
-The connecting client must send `Authorization: Bearer <MCP_HTTP_TOKEN>`. Do
-not expose this endpoint beyond the local machine.
+When running in a container, bind the container listener to `0.0.0.0` and
+publish it only on a host loopback address, for example
+`127.0.0.1:18765:8000`. The connecting client must send
+`Authorization: Bearer <MCP_HTTP_TOKEN>`. Do not expose this endpoint beyond
+the local machine. The `/healthz` endpoint is a minimal liveness check; clients
+should verify readiness by authenticating and completing an MCP initialization
+and `tools/list` request.
 
 ### Programmatic Usage
 

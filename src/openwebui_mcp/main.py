@@ -35,6 +35,28 @@ class AuthMiddleware:
     async def __call__(self, scope, receive, send):
         context_token = None
         if scope["type"] == "http":
+            if scope.get("path") == "/healthz":
+                if scope.get("method") not in {"GET", "HEAD"}:
+                    await self._reject(send, 405, "Method not allowed")
+                    return
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [
+                            (b"content-type", b"text/plain; charset=utf-8"),
+                            (b"content-length", b"2"),
+                        ],
+                    }
+                )
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": b"ok" if scope.get("method") == "GET" else b"",
+                    }
+                )
+                return
+
             headers = dict(scope.get("headers", []))
             auth_header = headers.get(b"authorization", b"").decode()
             origin = headers.get(b"origin", b"").decode()

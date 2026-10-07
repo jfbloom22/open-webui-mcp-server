@@ -48,6 +48,7 @@ USER 65532:65532
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=20s \
-    CMD curl --silent --output /dev/null http://localhost:8000/mcp
+    CMD-SHELL if [ "$MCP_TRANSPORT" != "http" ]; then exit 0; fi; \
+    curl --fail --silent --show-error --output /dev/null http://127.0.0.1:8000/healthz
 
 CMD ["python", "-m", "src.openwebui_mcp.main"]
