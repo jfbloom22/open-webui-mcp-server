@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -78,16 +79,39 @@ async def test_configure_member_profile_removes_unapproved_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MCP_PROFILE", "member")
-    registered = {"list_models": Mock(), "update_model": Mock(), "delete_model": Mock()}
-    get_tools = AsyncMock(return_value=registered)
+    monkeypatch.delenv("OPENWEBUI_DISABLED_TOOLS", raising=False)
+    registered = [
+        SimpleNamespace(name=name) for name in ("list_models", "update_model", "delete_model")
+    ]
+    list_tools = AsyncMock(return_value=registered)
     remove_tool = Mock()
     with (
-        patch.object(main.mcp, "get_tools", get_tools),
-        patch.object(main.mcp, "remove_tool", remove_tool),
+        patch.object(main.mcp, "list_tools", list_tools),
+        patch.object(main.mcp.local_provider, "remove_tool", remove_tool),
     ):
-        await main.configure_profile()
+        await main.configure_tools()
 
     remove_tool.assert_called_once_with("delete_model")
+
+
+@pytest.mark.asyncio
+async def test_configure_tools_applies_explicit_disables_and_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MCP_PROFILE", "local")
+    monkeypatch.setenv("OPENWEBUI_DISABLED_TOOLS", "list_users, missing_tool")
+    registered = [
+        SimpleNamespace(name=name) for name in ("list_models", "list_users", "delete_model")
+    ]
+    list_tools = AsyncMock(return_value=registered)
+    remove_tool = Mock()
+    with (
+        patch.object(main.mcp, "list_tools", list_tools),
+        patch.object(main.mcp.local_provider, "remove_tool", remove_tool),
+    ):
+        await main.configure_tools()
+
+    assert [call.args[0] for call in remove_tool.call_args_list] == ["delete_model", "list_users"]
 
 
 def test_model_tool_schemas_expose_kind_filters_and_access_grants() -> None:
@@ -137,7 +161,7 @@ async def test_model_handlers_forward_sampling_and_reasoning_parameters(
     monkeypatch.setenv("MCP_PROFILE", "local")
     monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
 
-    await main.create_model.fn(
+    await main.create_model(
         main.ModelCreateParam(
             id="new-model",
             name="New Model",
@@ -149,7 +173,7 @@ async def test_model_handlers_forward_sampling_and_reasoning_parameters(
         ),
         Mock(),
     )
-    await main.update_model.fn(
+    await main.update_model(
         main.ModelUpdateParam(
             model_id="existing-model",
             reasoning_effort="low",
@@ -188,7 +212,7 @@ async def test_model_handlers_forward_model_suggestion_prompts(
         main.PromptSuggestionParam(title=["Reflect", "on today"], content="Reflect now")
     ]
 
-    await main.create_model.fn(
+    await main.create_model(
         main.ModelCreateParam(
             id="new-model",
             name="New Model",
@@ -197,7 +221,7 @@ async def test_model_handlers_forward_model_suggestion_prompts(
         ),
         Mock(),
     )
-    await main.update_model.fn(
+    await main.update_model(
         main.ModelUpdateParam(model_id="existing-model", suggestion_prompts=suggestions),
         Mock(),
     )
@@ -236,7 +260,7 @@ async def test_update_knowledge_access_forwards_token_and_preserves_api_response
     monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
     grants = [{"principal_type": "group", "principal_id": "research", "permission": "read"}]
 
-    result = await main.update_knowledge_access.fn(
+    result = await main.update_knowledge_access(
         main.KnowledgeAccessParam(knowledge_id="knowledge-1", access_grants=grants), Mock()
     )
 
@@ -260,7 +284,7 @@ async def test_create_tool_schema_and_handler_forward_metadata(
     monkeypatch.setenv("MCP_PROFILE", "local")
     monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
 
-    result = await main.create_tool.fn(
+    result = await main.create_tool(
         main.ToolCreateParam(
             id="weather_tool",
             name="Weather",
