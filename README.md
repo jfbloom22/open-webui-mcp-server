@@ -55,7 +55,7 @@ Run the server directly with a client that supports stdio, or use the local
 Podman image:
 
 ```bash
-podman build -t openwebui-mcp:local .
+podman build --format docker -t openwebui-mcp:local .
 podman run --interactive --rm --env-file .env openwebui-mcp:local
 ```
 
@@ -82,8 +82,9 @@ publish it only on a host loopback address, for example
 `127.0.0.1:18765:8000`. The connecting client must send
 `Authorization: Bearer <MCP_HTTP_TOKEN>`. Do not expose this endpoint beyond
 the local machine. The `/healthz` endpoint is a minimal liveness check; clients
-should verify readiness by authenticating and completing an MCP initialization
-and `tools/list` request.
+should verify readiness with an authenticated MCP client and confirm the
+expected management tools are available. The local manager uses the FastMCP
+client SDK for protocol negotiation and tool discovery.
 
 ### Programmatic Usage
 

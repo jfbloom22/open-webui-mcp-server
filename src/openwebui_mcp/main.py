@@ -364,9 +364,7 @@ class KnowledgeAccessParam(BaseModel):
 class ToolServerConfigUpdateParam(BaseModel):
     server_id: str = Field(description="Open WebUI tool server ID")
     function_name_filter_list: list[str] = Field(
-        description=(
-            "Exact tool names to expose; use an empty list to expose all tools"
-        )
+        description=("Exact tool names to expose; use an empty list to expose all tools")
     )
     description: Optional[str] = Field(
         default=None, description="Optional replacement tool server description"
@@ -708,7 +706,9 @@ async def get_model(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
 
 @mcp.tool()
 async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]:
-    """Create a model with model-level instructions, knowledge, tools, and quick-start suggestions. ADMIN ONLY.
+    """Create a model with model-level instructions, knowledge, tools, and quick-start suggestions.
+
+    ADMIN ONLY.
 
     For folder/project-level instructions or knowledge, use ``create_folder``
     or ``update_folder`` instead.
@@ -1543,38 +1543,28 @@ async def update_tool_server_config(
 # =============================================================================
 
 
-def configure_tool_allowlist() -> None:
-    """Disable destructive tools and any explicitly configured extra tools."""
+async def configure_tools() -> None:
+    """Apply profile and explicit tool restrictions before advertising tools."""
+    profile = os.getenv("MCP_PROFILE", "local").lower()
+    if profile not in {"local", "admin", "member"}:
+        raise ValueError("MCP_PROFILE must be one of: local, admin, member")
+
+    registered_tools = {tool.name for tool in await mcp.list_tools()}
     additional_disabled = {
         name.strip()
         for name in os.getenv("OPENWEBUI_DISABLED_TOOLS", "").split(",")
         if name.strip()
     }
-    registered_tools = set(mcp._tool_manager._tools)
-    disabled_tools = {
-        name for name in registered_tools if name.startswith("delete_")
-    } | additional_disabled
-    for name in sorted(disabled_tools & registered_tools):
-        mcp.remove_tool(name)
-
-
-async def configure_profile() -> None:
-    """Remove tools outside the selected deployed profile before serving."""
-    profile = os.getenv("MCP_PROFILE", "local").lower()
-    if profile == "local":
-        return
-    if profile not in {"admin", "member"}:
-        raise ValueError("MCP_PROFILE must be one of: local, admin, member")
-
-    registered_tools = await mcp.get_tools()
     allowed_tools = (
-        {name for name in registered_tools if not name.startswith("delete_")}
-        if profile == "admin"
-        else MEMBER_PROFILE_TOOLS
+        MEMBER_PROFILE_TOOLS & registered_tools if profile == "member" else registered_tools
     )
-    for name in registered_tools:
-        if name not in allowed_tools:
-            mcp.remove_tool(name)
+    disallowed_tools = (
+        {name for name in registered_tools if name.startswith("delete_")}
+        | additional_disabled
+        | (registered_tools - allowed_tools)
+    )
+    for name in sorted(disallowed_tools & registered_tools):
+        mcp.local_provider.remove_tool(name)
 
 
 def main():
@@ -1586,8 +1576,7 @@ def main():
         print("Example: export OPENWEBUI_URL=https://ai.example.com", file=sys.stderr)
         sys.exit(1)
 
-    configure_tool_allowlist()
-    asyncio.run(configure_profile())
+    asyncio.run(configure_tools())
     transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
     host = os.getenv("MCP_HTTP_HOST", "127.0.0.1")
     port = int(os.getenv("MCP_HTTP_PORT", "8000"))
