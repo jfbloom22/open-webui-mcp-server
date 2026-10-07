@@ -18,6 +18,10 @@ def test_member_profile_allowlist_excludes_admin_surfaces() -> None:
     assert "list_users" not in main.MEMBER_PROFILE_TOOLS
     assert "get_tool_servers" not in main.MEMBER_PROFILE_TOOLS
     assert "update_model_access" not in main.MEMBER_PROFILE_TOOLS
+    assert "get_model_connections" not in main.MEMBER_PROFILE_TOOLS
+    assert "set_connection_model_ids" not in main.MEMBER_PROFILE_TOOLS
+    assert "set_model_visibility" not in main.MEMBER_PROFILE_TOOLS
+    assert "set_model_enabled" not in main.MEMBER_PROFILE_TOOLS
     assert not any(name.startswith("delete_") for name in main.MEMBER_PROFILE_TOOLS)
 
 
@@ -148,6 +152,22 @@ def test_tool_server_config_schema_exposes_scoped_fields() -> None:
         "function_name_filter_list",
         "description",
     }
+
+
+def test_model_management_admin_tool_schemas_are_explicit_and_guarded() -> None:
+    connection_schema = main.ConnectionModelIdsUpdateParam.model_json_schema()
+    visibility_schema = main.ModelVisibilityParam.model_json_schema()
+    enabled_schema = main.ModelEnabledParam.model_json_schema()
+
+    assert set(connection_schema["properties"]) == {
+        "connection_index",
+        "expected_base_url",
+        "expected_model_ids",
+        "model_ids",
+    }
+    assert connection_schema["properties"]["connection_index"]["minimum"] == 0
+    assert "visible" in visibility_schema["properties"]
+    assert "enabled" in enabled_schema["properties"]
 
 
 @pytest.mark.asyncio
