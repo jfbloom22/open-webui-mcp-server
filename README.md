@@ -6,26 +6,28 @@ List tools return compact indexes containing identifiers and discovery metadata.
 
 ## Features
 
-- **User Management**: List, get, update roles, delete users
-- **Group Management**: Create, update, add/remove members, delete groups
+- **User Management**: List users, inspect user details, and update roles
+- **Group Management**: Create and update groups, and manage membership
 - **Model Management**: Discover user-scoped provider, base, and custom models; create custom models, update settings, and manage access grants
-- **Knowledge Base Management**: Create, list, update, share, and delete knowledge bases
+- **Knowledge Base Management**: Create, list, update, and share knowledge bases
 - **File Management**: Upload local files, optionally linking them to a knowledge base, and manage file content
-- **Chat Management**: List, view, delete chats
+- **Chat Management**: List and view chats
 - **Tool & Function Discovery**: List available tools and functions
 - **Permission-Aware**: All operations respect the logged-in user's permissions
 
 ## Security
 
-The normal deployment is a local stdio process. It uses `OPENWEBUI_API_KEY` from
-the local environment and is intended for a single trusted user.
+For one local client process, use stdio. For multiple simultaneous clients,
+use the shared, authenticated HTTP service. Both modes use `OPENWEBUI_API_KEY`
+from the local environment.
 
 - Delete tools are disabled before the server advertises its MCP tools.
 - Add further disabled tool names with `OPENWEBUI_DISABLED_TOOLS`, as a
   comma-separated list.
-- For the optional HTTP transport, bind to loopback and set `MCP_HTTP_TOKEN`.
-  HTTP requests without that bearer token are rejected and the token is never
-  forwarded to Open WebUI.
+- For HTTP transport, set `MCP_HTTP_TOKEN`. Bind a native server to loopback;
+  for containers, bind inside the container and publish only on host loopback.
+  Unauthenticated requests are rejected, and the token is never forwarded to
+  Open WebUI.
 
 ## Installation
 
@@ -68,13 +70,14 @@ configuring each client to start its own container.
 For multiple local clients, run one long-lived HTTP container and connect each
 Codex or Cursor session to that server. Do not start a separate HTTP container
 from every client's stdio command. Publish the container port only on the
-loopback interface, and set these values in the local `.env`:
+loopback interface. The `.env` format uses `KEY=value` lines, without `export`:
 
 ```bash
-export MCP_TRANSPORT=http
-export MCP_HTTP_HOST=0.0.0.0
-export MCP_HTTP_PORT=8000
-export MCP_HTTP_TOKEN=generate-a-long-random-token
+MCP_TRANSPORT=http
+MCP_HTTP_HOST=0.0.0.0
+MCP_HTTP_PORT=8000
+MCP_HTTP_PATH=/mcp
+MCP_HTTP_TOKEN=<generate-a-long-random-token>
 ```
 
 When running in a container, bind the container listener to `0.0.0.0` and
