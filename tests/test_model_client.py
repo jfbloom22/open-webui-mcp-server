@@ -1,5 +1,7 @@
+import json
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from openwebui_mcp.client import OpenWebUIClient
@@ -164,9 +166,7 @@ async def test_set_model_visibility_preserves_existing_fields() -> None:
     payload = client.post.await_args.kwargs["json"]
     assert payload["meta"] == {"hidden": True, "description": "Keep me"}
     assert payload["params"] == {"system": "Existing prompt", "temperature": 0.4}
-    assert payload["access_grants"] == [
-        {"principal_type": "group", "principal_id": "team"}
-    ]
+    assert payload["access_grants"] == [{"principal_type": "group", "principal_id": "team"}]
     assert payload["is_active"] is True
     assert result["visible"] is False
 
@@ -387,6 +387,7 @@ async def test_update_model_can_clear_named_params_while_preserving_the_full_for
 @pytest.mark.asyncio
 async def test_update_model_replaces_collection_knowledge_and_preserves_direct_files() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(return_value={"id": "new-kb"})
     client.get_model = AsyncMock(
         return_value={
             "id": "project-assistant",
@@ -415,8 +416,172 @@ async def test_update_model_replaces_collection_knowledge_and_preserves_direct_f
 
 
 @pytest.mark.asyncio
+async def test_create_model_accepts_positional_api_key() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.post = AsyncMock(return_value={"id": "m1"})
+
+    await client.create_model("m1", "Model", "gpt-5", None, None, None, None, "token")
+
+    client.post.assert_awaited_once_with(
+        "/api/v1/models/create",
+        "token",
+        json={
+            "id": "m1",
+            "name": "Model",
+            "base_model_id": "gpt-5",
+            "meta": {},
+            "params": {},
+            "access_grants": None,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_model_accepts_positional_api_key() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_model = AsyncMock(
+        return_value={
+            "id": "m1",
+            "name": "Model",
+            "base_model_id": "gpt-5",
+            "meta": {},
+            "params": {},
+            "access_grants": [],
+            "is_active": True,
+        }
+    )
+    client.post = AsyncMock(return_value={"id": "m1"})
+
+    await client.update_model("m1", None, None, None, None, None, None, None, "token")
+
+    client.get_model.assert_awaited_once_with("m1", "token")
+    client.post.assert_awaited_once_with(
+        "/api/v1/models/model/update",
+        "token",
+        json={
+            "id": "m1",
+            "name": "Model",
+            "base_model_id": "gpt-5",
+            "meta": {},
+            "params": {},
+            "access_grants": [],
+            "is_active": True,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_model_validates_readable_skill_ids_before_create() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(return_value={"id": "skill-1", "write_access": True})
+    client.post = AsyncMock(return_value={"id": "project-assistant"})
+
+    await client.create_model(
+        id="project-assistant",
+        name="Project Assistant",
+        base_model_id="gpt-5",
+        skill_ids=["skill-1"],
+        api_key="token",
+    )
+
+    client.get.assert_awaited_once_with("/api/v1/skills/id/skill-1", "token")
+    client.post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_model_rejects_unknown_skill_ids() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    request = httpx.Request("GET", "https://webui.example/api/v1/skills/id/missing")
+    response = httpx.Response(404, request=request, text="{}")
+    client.get = AsyncMock(
+        side_effect=httpx.HTTPStatusError("404", request=request, response=response)
+    )
+    client.post = AsyncMock()
+
+    with pytest.raises(ValueError, match="Unknown Open WebUI skill ID: missing"):
+        await client.create_model(
+            id="m",
+            name="M",
+            base_model_id="gpt-5",
+            skill_ids=["missing"],
+            api_key="token",
+        )
+
+    client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_model_rejects_inaccessible_skill_ids() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    request = httpx.Request("GET", "https://webui.example/api/v1/skills/id/private-skill")
+    response = httpx.Response(401, request=request, text="{}")
+    client.get = AsyncMock(
+        side_effect=httpx.HTTPStatusError("401", request=request, response=response)
+    )
+    client.post = AsyncMock()
+
+    with pytest.raises(ValueError, match="Inaccessible Open WebUI skill ID: private-skill"):
+        await client.create_model(
+            id="m",
+            name="M",
+            base_model_id="gpt-5",
+            skill_ids=["private-skill"],
+            api_key="token",
+        )
+
+    client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_model_persists_empty_default_feature_ids() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_model = AsyncMock(
+        return_value={
+            "id": "custom",
+            "name": "Custom",
+            "base_model_id": "gpt-5",
+            "meta": {"defaultFeatureIds": ["web_search", "memory"]},
+            "params": {},
+            "access_grants": [],
+            "is_active": True,
+        }
+    )
+    client.post = AsyncMock(return_value={"id": "custom"})
+
+    await client.update_model("custom", default_feature_ids=[], api_key="token")
+
+    payload = client.post.await_args.kwargs["json"]
+    assert payload["meta"]["defaultFeatureIds"] == []
+
+
+@pytest.mark.asyncio
+async def test_update_model_skips_skill_lookup_when_clearing_skill_ids() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get_model = AsyncMock(
+        return_value={
+            "id": "custom",
+            "name": "Custom",
+            "base_model_id": "gpt-5",
+            "meta": {"skillIds": ["skill-1"]},
+            "params": {},
+            "access_grants": [],
+            "is_active": True,
+        }
+    )
+    client.get = AsyncMock()
+    client.post = AsyncMock(return_value={"id": "custom"})
+
+    await client.update_model("custom", skill_ids=[], api_key="token")
+
+    client.get.assert_not_called()
+    payload = client.post.await_args.kwargs["json"]
+    assert "skillIds" not in payload["meta"]
+
+
+@pytest.mark.asyncio
 async def test_create_model_maps_knowledge_ids_to_collection_references() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(return_value={"id": "kb-a"})
     client.post = AsyncMock(return_value={"id": "project-assistant"})
 
     await client.create_model(
@@ -444,6 +609,27 @@ async def test_create_model_maps_knowledge_ids_to_collection_references() -> Non
             "access_grants": None,
         },
     )
+    assert client.get.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_create_model_rejects_unknown_knowledge_id() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.post = AsyncMock(return_value={"id": "m"})
+    response = httpx.Response(404, request=httpx.Request("GET", "http://example/kb"))
+    kb_error = httpx.HTTPStatusError("404", request=response.request, response=response)
+    client.get = AsyncMock(side_effect=kb_error)
+
+    with pytest.raises(ValueError, match="Unknown Open WebUI knowledge base ID: missing-kb"):
+        await client.create_model(
+            id="m",
+            name="M",
+            base_model_id="gpt-5",
+            knowledge_ids=["missing-kb"],
+            api_key="token",
+        )
+
+    client.post.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -508,13 +694,54 @@ async def test_upload_text_file_forwards_session_token_and_multipart_payload() -
         "Accept": "application/json",
         "Authorization": "Bearer session-token",
     }
-    assert fake.kwargs["data"] == {
-        "metadata": "{}",
+    assert fake.kwargs["params"] == {
         "process": "true",
-        "process_in_background": "false",
+        "process_in_background": "true",
     }
+    assert fake.kwargs["data"] == {"metadata": "{}"}
     assert fake.kwargs["files"]["file"][0] == "update.md"
     assert fake.kwargs["files"]["file"][1] == b"# Update"
+
+
+@pytest.mark.asyncio
+async def test_upload_file_bytes_puts_processing_flags_in_query_params() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+
+    class Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, str]:
+            return {"id": "file-9"}
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            self.kwargs = kwargs
+            return Response()
+
+    fake = AsyncClient()
+    with patch("openwebui_mcp.client.httpx.AsyncClient", return_value=fake):
+        await client._upload_file_bytes(
+            "doc.md",
+            b"# Doc",
+            "text/markdown",
+            "session-token",
+            knowledge_id="kb-9",
+            process_in_background=True,
+        )
+
+    assert fake.kwargs["params"] == {
+        "process": "true",
+        "process_in_background": "true",
+    }
+    assert fake.kwargs["data"] == {"metadata": json.dumps({"knowledge_id": "kb-9"})}
+    assert "process" not in fake.kwargs["data"]
 
 
 @pytest.mark.asyncio

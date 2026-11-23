@@ -11,7 +11,48 @@ from urllib.parse import quote
 
 import httpx
 
+from .discovery import build_environment_info, validate_model_configuration
+from .model_generation import run_saved_model_generation_test
+from .security import (
+    compact_file_search_collection,
+    project_bounded_file_content,
+    project_config_export,
+    project_file_detail_response,
+    project_knowledge_detail,
+    project_knowledge_file_list_response,
+    project_models_config,
+    sanitize_current_user,
+    sanitize_error_detail,
+    sanitize_service_url,
+    sanitize_tool_servers_config,
+    strip_file_content_fields,
+)
+
 KNOWLEDGE_PAGE_SIZE = 30
+KNOWLEDGE_FILES_LIST_PAGE_SIZE = 30
+KNOWLEDGE_FILE_LIST_SCAN_MAX_PAGES = 34
+_MEMBERSHIP_SCAN_LIMIT_MSG = (
+    "Knowledge file membership could not be fully verified within the configured "
+    "page scan limit (~{cap} files). The file may still be attached; paginate "
+    "list_knowledge_files or retry with a smaller collection."
+)
+
+
+def _knowledge_file_scan_max_pages() -> int:
+    """Safety cap for KB file listing scans (membership checks, scoped search)."""
+    raw = os.getenv("OPENWEBUI_KB_FILE_SCAN_MAX_PAGES", "").strip()
+    if raw.isdigit():
+        return max(1, int(raw))
+    return KNOWLEDGE_FILE_LIST_SCAN_MAX_PAGES
+
+
+FILE_PROCESSING_WAIT_MAX_SECONDS = 30
+FILE_PROCESSING_POLL_INTERVAL_SECONDS = 0.5
+FILE_UPLOAD_BACKGROUND_HTTP_TIMEOUT_SECONDS = 60.0
+FILE_UPLOAD_SYNC_HTTP_TIMEOUT_SECONDS = 120.0
+DEFAULT_HTTP_TIMEOUT_SECONDS = 60.0
+FILE_SEARCH_DEFAULT_LIMIT = 100
+FILE_SEARCH_MAX_LIMIT = 1000
 
 
 class _UnsetType:
@@ -61,15 +102,16 @@ class OpenWebUIClient:
         return quote(value, safe="")
 
     @staticmethod
-    def _raise_for_status(response: httpx.Response) -> None:
-        """Raise an HTTP error that includes the body but never request credentials."""
+    def _raise_for_status(response: httpx.Response, *, request_token: str | None = None) -> None:
+        """Raise an HTTP error that includes a sanitized body, never credentials."""
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as error:
             status = error.response.status_code if error.response is not None else "unknown"
             body = error.response.text if error.response is not None else response.text
+            safe_body = sanitize_error_detail(body, request_token=request_token)
             raise httpx.HTTPStatusError(
-                f"HTTP {status} error response: {body}",
+                f"HTTP {status} error response: {safe_body}",
                 request=error.request,
                 response=error.response,
             ) from error
@@ -79,20 +121,23 @@ class OpenWebUIClient:
         method: str,
         path: str,
         api_key: Optional[str] = None,
+        *,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Make an authenticated request to Open WebUI API."""
         url = f"{self.base_url}{path}"
         headers = self._get_headers(api_key)
+        client_timeout = timeout if timeout is not None else DEFAULT_HTTP_TIMEOUT_SECONDS
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=client_timeout) as client:
             response = await client.request(
                 method,
                 url,
                 headers=headers,
                 **kwargs,
             )
-            self._raise_for_status(response)
+            self._raise_for_status(response, request_token=api_key or self.api_key)
 
             if response.headers.get("content-type", "").startswith("application/json"):
                 payload = response.json()
@@ -100,8 +145,15 @@ class OpenWebUIClient:
             return {"text": response.text}
 
     # Convenience methods
-    async def get(self, path: str, api_key: Optional[str] = None, **kwargs: Any) -> dict:
-        return await self.request("GET", path, api_key, **kwargs)
+    async def get(
+        self,
+        path: str,
+        api_key: Optional[str] = None,
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        return await self.request("GET", path, api_key, timeout=timeout, **kwargs)
 
     async def post(self, path: str, api_key: Optional[str] = None, **kwargs: Any) -> dict:
         return await self.request("POST", path, api_key, **kwargs)
@@ -147,6 +199,135 @@ class OpenWebUIClient:
                     result[key] = value
             compacted.append(result)
         return {**payload, collection_key: compacted}
+
+    @staticmethod
+    def _apply_workspace_meta_fields(
+        meta: dict[str, Any],
+        *,
+        description: Optional[str] | _UnsetType = UNSET,
+        capabilities: Optional[dict[str, Any]] | _UnsetType = UNSET,
+        builtin_tools: Optional[dict[str, Any]] | _UnsetType = UNSET,
+        skill_ids: Optional[list[str]] | _UnsetType = UNSET,
+        default_feature_ids: Optional[list[str]] | _UnsetType = UNSET,
+    ) -> None:
+        """Merge Open WebUI workspace meta fields using omission-preserving semantics."""
+        if description is not UNSET:
+            meta["description"] = None if description in (None, "") else description
+        if capabilities is not UNSET:
+            if capabilities is None:
+                meta.pop("capabilities", None)
+            else:
+                existing = meta.get("capabilities")
+                base = existing if isinstance(existing, dict) else {}
+                meta["capabilities"] = {**base, **capabilities}
+        if builtin_tools is not UNSET:
+            if builtin_tools is None:
+                meta.pop("builtinTools", None)
+            else:
+                existing = meta.get("builtinTools")
+                base = existing if isinstance(existing, dict) else {}
+                meta["builtinTools"] = {**base, **builtin_tools}
+        if skill_ids is not UNSET:
+            if skill_ids:
+                meta["skillIds"] = skill_ids
+            else:
+                meta.pop("skillIds", None)
+        if default_feature_ids is not UNSET:
+            # Open WebUI UI treats missing vs [] differently for instance default fallback;
+            # explicit [] must persist on the model (cf. ModelEditor defaultFeatureIds).
+            meta["defaultFeatureIds"] = list(default_feature_ids or [])
+
+    async def _assert_file_in_knowledge(
+        self,
+        knowledge_id: str,
+        file_id: str,
+        api_key: Optional[str] = None,
+    ) -> None:
+        """Confirm membership via paginated GET /api/v1/knowledge/{id}/files.
+
+        Open WebUI exposes no direct file-in-KB lookup for callers; scans are capped
+        by ``OPENWEBUI_KB_FILE_SCAN_MAX_PAGES`` (default 34 pages × 30 files).
+        """
+        max_pages = _knowledge_file_scan_max_pages()
+        page = 1
+        pages_fetched = 0
+        next_page: int | None = None
+        while pages_fetched < max_pages:
+            pages_fetched += 1
+            batch = await self.list_knowledge_files(
+                knowledge_id,
+                api_key,
+                page=page,
+                limit=KNOWLEDGE_FILES_LIST_PAGE_SIZE,
+            )
+            for item in batch.get("items", []):
+                if isinstance(item, dict) and str(item.get("id")) == file_id:
+                    return
+            next_page = batch.get("next_page")
+            if not next_page:
+                break
+            page = int(next_page)
+
+        if next_page:
+            cap = max_pages * KNOWLEDGE_FILES_LIST_PAGE_SIZE
+            raise ValueError(_MEMBERSHIP_SCAN_LIMIT_MSG.format(cap=cap))
+
+        raise ValueError(f"File {file_id!r} is not attached to knowledge base {knowledge_id!r}")
+
+    async def _validate_tool_ids(self, tool_ids: list[str], api_key: Optional[str] = None) -> None:
+        if not tool_ids:
+            return
+        tools = await self.list_tools(api_key)
+        collection_key = next(
+            (key for key in ("data", "items", "tools") if isinstance(tools.get(key), list)),
+            None,
+        )
+        available = {
+            str(item["id"])
+            for item in (tools.get(collection_key, []) if collection_key else [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        unknown = [tool_id for tool_id in tool_ids if tool_id not in available]
+        if unknown:
+            raise ValueError(f"Unknown Open WebUI tool IDs: {', '.join(unknown)}")
+
+    async def _validate_skill_ids(
+        self,
+        skill_ids: list[str],
+        api_key: Optional[str] = None,
+    ) -> None:
+        """Confirm each skill exists and is readable via GET /api/v1/skills/id/{id}."""
+        for skill_id in skill_ids:
+            try:
+                await self.get(f"/api/v1/skills/id/{self._path_id(skill_id)}", api_key)
+            except httpx.HTTPStatusError as error:
+                status = error.response.status_code if error.response is not None else None
+                if status == 404:
+                    raise ValueError(f"Unknown Open WebUI skill ID: {skill_id}") from error
+                if status == 401:
+                    raise ValueError(f"Inaccessible Open WebUI skill ID: {skill_id}") from error
+                raise
+
+    async def _validate_knowledge_ids(
+        self,
+        knowledge_ids: list[str],
+        api_key: Optional[str] = None,
+    ) -> None:
+        """Confirm each knowledge collection exists and is readable for the caller."""
+        for knowledge_id in knowledge_ids:
+            try:
+                await self.get(f"/api/v1/knowledge/{self._path_id(knowledge_id)}", api_key)
+            except httpx.HTTPStatusError as error:
+                status = error.response.status_code if error.response is not None else None
+                if status == 404:
+                    raise ValueError(
+                        f"Unknown Open WebUI knowledge base ID: {knowledge_id}"
+                    ) from error
+                if status in {401, 403}:
+                    raise ValueError(
+                        f"Inaccessible Open WebUI knowledge base ID: {knowledge_id}"
+                    ) from error
+                raise
 
     # ==========================================================================
     # User Management
@@ -202,8 +383,8 @@ class OpenWebUIClient:
         return await self.get(f"/api/v1/users/{self._path_id(user_id)}", api_key)
 
     async def get_current_user(self, api_key: Optional[str] = None) -> dict:
-        """Get the currently authenticated user."""
-        return await self.get("/api/v1/auths/", api_key)
+        """Get the current session profile without exposing bearer tokens."""
+        return sanitize_current_user(await self.get("/api/v1/auths/", api_key))
 
     async def update_user_role(
         self, user_id: str, role: str, api_key: Optional[str] = None
@@ -431,6 +612,45 @@ class OpenWebUIClient:
         """Get a specific custom model by ID."""
         return await self.get(f"/api/v1/models/model?id={quote(model_id, safe='')}", api_key)
 
+    async def get_environment_info(
+        self,
+        api_key: Optional[str] = None,
+        *,
+        mcp_profile: str,
+        active_operations: list[str],
+    ) -> dict[str, Any]:
+        """Return Open WebUI version metadata and MCP adapter capabilities (read-only)."""
+        return build_environment_info(
+            await self.get("/api/version", api_key),
+            mcp_profile=mcp_profile,
+            active_operations=active_operations,
+        )
+
+    async def validate_model_configuration(
+        self,
+        model_id: str,
+        api_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Validate saved custom-model references and report stored settings (read-only)."""
+        return await validate_model_configuration(self, model_id, api_key)
+
+    async def test_saved_model_generation(
+        self,
+        model_id: str,
+        prompt: str,
+        *,
+        max_output_tokens: int = 128,
+        api_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Run a bounded plain chat completion smoke test (may incur provider cost)."""
+        return await run_saved_model_generation_test(
+            self,
+            model_id,
+            prompt,
+            max_output_tokens=max_output_tokens,
+            api_key=api_key,
+        )
+
     async def create_model(
         self,
         id: str,
@@ -441,9 +661,29 @@ class OpenWebUIClient:
         access_grants: Optional[list[dict]] = None,
         knowledge_ids: Optional[list[str]] = None,
         api_key: Optional[str] = None,
+        *,
+        description: Optional[str] | _UnsetType = UNSET,
+        capabilities: Optional[dict[str, Any]] | _UnsetType = UNSET,
+        builtin_tools: Optional[dict[str, Any]] | _UnsetType = UNSET,
+        skill_ids: Optional[list[str]] | _UnsetType = UNSET,
+        default_feature_ids: Optional[list[str]] | _UnsetType = UNSET,
     ) -> dict:
         """Create a new model (admin only)."""
         model_meta = dict(meta or {})
+        if "toolIds" in model_meta:
+            await self._validate_tool_ids(model_meta.get("toolIds") or [], api_key)
+        if skill_ids is not UNSET and skill_ids:
+            await self._validate_skill_ids(skill_ids, api_key)
+        if knowledge_ids:
+            await self._validate_knowledge_ids(knowledge_ids, api_key)
+        self._apply_workspace_meta_fields(
+            model_meta,
+            description=description,
+            capabilities=capabilities,
+            builtin_tools=builtin_tools,
+            skill_ids=skill_ids,
+            default_feature_ids=default_feature_ids,
+        )
         if knowledge_ids is not None:
             model_meta["knowledge"] = [
                 {"id": knowledge_id, "type": "collection"} for knowledge_id in knowledge_ids
@@ -469,6 +709,12 @@ class OpenWebUIClient:
         base_model_id: Optional[str] = None,
         knowledge_ids: Optional[list[str]] = None,
         api_key: Optional[str] = None,
+        *,
+        description: Optional[str] | _UnsetType = UNSET,
+        capabilities: Optional[dict[str, Any]] | _UnsetType = UNSET,
+        builtin_tools: Optional[dict[str, Any]] | _UnsetType = UNSET,
+        skill_ids: Optional[list[str]] | _UnsetType = UNSET,
+        default_feature_ids: Optional[list[str]] | _UnsetType = UNSET,
     ) -> dict:
         """Update a model while preserving fields required by the current API."""
         existing = await self.get_model(model_id, api_key)
@@ -477,6 +723,20 @@ class OpenWebUIClient:
             model_params.pop(key, None)
 
         model_meta = {**(existing.get("meta") or {}), **(meta or {})}
+        if meta and "toolIds" in meta:
+            await self._validate_tool_ids(meta.get("toolIds") or [], api_key)
+        if skill_ids is not UNSET and skill_ids:
+            await self._validate_skill_ids(skill_ids, api_key)
+        if knowledge_ids:
+            await self._validate_knowledge_ids(knowledge_ids, api_key)
+        self._apply_workspace_meta_fields(
+            model_meta,
+            description=description,
+            capabilities=capabilities,
+            builtin_tools=builtin_tools,
+            skill_ids=skill_ids,
+            default_feature_ids=default_feature_ids,
+        )
         if knowledge_ids is not None:
             existing_knowledge = model_meta.get("knowledge")
             direct_files = (
@@ -683,8 +943,96 @@ class OpenWebUIClient:
         )
 
     async def get_knowledge(self, knowledge_id: str, api_key: Optional[str] = None) -> dict:
-        """Get a specific knowledge base."""
-        return await self.get(f"/api/v1/knowledge/{self._path_id(knowledge_id)}", api_key)
+        """Get sanitized knowledge-base metadata (no embedded file content)."""
+        payload = await self.get(f"/api/v1/knowledge/{self._path_id(knowledge_id)}", api_key)
+        return project_knowledge_detail(payload if isinstance(payload, dict) else {})
+
+    async def list_knowledge_files(
+        self,
+        knowledge_id: str,
+        api_key: Optional[str] = None,
+        *,
+        page: int = 1,
+        limit: int = KNOWLEDGE_FILES_LIST_PAGE_SIZE,
+    ) -> dict[str, Any]:
+        """List files in a knowledge base (metadata only, bounded pagination).
+
+        ``limit`` is clamped to ``KNOWLEDGE_FILES_LIST_PAGE_SIZE`` (30) before
+        ``next_page`` is derived; no role- or response-based page size inference.
+        """
+        page = max(1, page)
+        limit = max(1, min(limit, KNOWLEDGE_FILES_LIST_PAGE_SIZE))
+        payload = await self.get(
+            f"/api/v1/knowledge/{self._path_id(knowledge_id)}/files",
+            api_key,
+            params={"page": page, "limit": limit, "include_content": False},
+        )
+        projected = project_knowledge_file_list_response(
+            payload if isinstance(payload, dict) else {}
+        )
+        total = int(projected.get("total") or 0)
+        projected["page"] = page
+        projected["limit"] = limit
+        projected["next_page"] = page + 1 if total > page * limit else None
+        return projected
+
+    async def get_file_processing_status(
+        self,
+        file_id: str,
+        api_key: Optional[str] = None,
+        *,
+        request_timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Read processing status via GET /api/v1/files/{id}/process/status (non-streaming)."""
+        payload = await self.get(
+            f"/api/v1/files/{self._path_id(file_id)}/process/status",
+            api_key,
+            params={"stream": False},
+            timeout=request_timeout,
+        )
+        if isinstance(payload, dict) and isinstance(payload.get("status"), str):
+            return {"file_id": file_id, "status": payload["status"]}
+        return {"file_id": file_id, "status": "unknown"}
+
+    async def wait_for_file_processing(
+        self,
+        file_id: str,
+        api_key: Optional[str] = None,
+        *,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        """Poll file processing status until completed, failed, or timeout (bounded)."""
+        timeout_seconds = max(1, min(timeout_seconds, FILE_PROCESSING_WAIT_MAX_SECONDS))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        last_status = "pending"
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            request_timeout = max(0.1, min(remaining, DEFAULT_HTTP_TIMEOUT_SECONDS))
+            payload = await self.get_file_processing_status(
+                file_id,
+                api_key,
+                request_timeout=request_timeout,
+            )
+            last_status = str(payload.get("status") or "pending")
+            if last_status in {"completed", "failed"}:
+                return {
+                    "file_id": file_id,
+                    "status": last_status,
+                    "timed_out": False,
+                }
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(FILE_PROCESSING_POLL_INTERVAL_SECONDS, remaining))
+        terminal = last_status if last_status in {"completed", "failed"} else "pending"
+        return {
+            "file_id": file_id,
+            "status": terminal,
+            "timed_out": True,
+        }
 
     async def create_knowledge(
         self,
@@ -762,11 +1110,12 @@ class OpenWebUIClient:
         else:
             payload = first_page
 
-        return self._compact_collection(
+        compacted = self._compact_collection(
             payload,
             ("id", "filename", "user_id", "hash", "created_at", "updated_at"),
             {"knowledge_id": knowledge_id},
         )
+        return project_file_detail_response(compacted)
 
     async def upload_file(
         self,
@@ -804,21 +1153,107 @@ class OpenWebUIClient:
                     data={"metadata": json.dumps(metadata)},
                     files={"file": (path.name, file_handle, content_type)},
                 )
-            self._raise_for_status(response)
+            self._raise_for_status(response, request_token=api_key or self.api_key)
             payload = response.json()
-            return payload if isinstance(payload, dict) else {"data": payload}
+            result = payload if isinstance(payload, dict) else {"data": payload}
+            return strip_file_content_fields(result)
 
-    async def search_files(self, filename: str, api_key: Optional[str] = None) -> dict:
-        """Search files by filename pattern (supports wildcards)."""
-        return await self.get("/api/v1/files/search", api_key, params={"filename": filename})
+    async def search_files(
+        self,
+        filename: str,
+        api_key: Optional[str] = None,
+        *,
+        skip: int = 0,
+        limit: int = FILE_SEARCH_DEFAULT_LIMIT,
+        knowledge_id: Optional[str] = None,
+    ) -> dict:
+        """Search files by filename (metadata only; never returns extracted content)."""
+        if skip < 0:
+            raise ValueError("skip must be zero or greater")
+        if limit < 1 or limit > FILE_SEARCH_MAX_LIMIT:
+            raise ValueError(f"limit must be between 1 and {FILE_SEARCH_MAX_LIMIT}")
+        if knowledge_id:
+            return await self._search_files_in_knowledge(
+                knowledge_id,
+                filename,
+                api_key,
+                skip=skip,
+                limit=limit,
+            )
+        payload = await self.get(
+            "/api/v1/files/search",
+            api_key,
+            params={
+                "filename": filename,
+                "content": False,
+                "skip": skip,
+                "limit": limit,
+            },
+        )
+        return compact_file_search_collection(payload)
+
+    async def _search_files_in_knowledge(
+        self,
+        knowledge_id: str,
+        filename_pattern: str,
+        api_key: Optional[str],
+        *,
+        skip: int,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Match filenames within one knowledge base via GET /api/v1/knowledge/{id}/files."""
+        import fnmatch
+
+        pattern = filename_pattern.casefold()
+        matches: list[dict[str, Any]] = []
+        page = 1
+        pages_fetched = 0
+        next_page: int | None = None
+        while pages_fetched < _knowledge_file_scan_max_pages():
+            pages_fetched += 1
+            batch = await self.list_knowledge_files(
+                knowledge_id,
+                api_key,
+                page=page,
+                limit=KNOWLEDGE_FILES_LIST_PAGE_SIZE,
+            )
+            for item in batch.get("items", []):
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("filename")
+                if isinstance(name, str) and fnmatch.fnmatch(name.casefold(), pattern):
+                    matches.append(item)
+            next_page = batch.get("next_page")
+            if not next_page:
+                break
+            page = int(next_page)
+        projected = compact_file_search_collection({"data": matches[skip : skip + limit]})
+        if next_page:
+            projected["scan_limit_reached"] = True
+            projected["pages_scanned"] = pages_fetched
+        return projected
 
     async def get_file(self, file_id: str, api_key: Optional[str] = None) -> dict:
         """Get a specific file's metadata."""
-        return await self.get(f"/api/v1/files/{self._path_id(file_id)}", api_key)
+        payload = await self.get(f"/api/v1/files/{self._path_id(file_id)}", api_key)
+        return project_file_detail_response(
+            payload if isinstance(payload, dict) else {"data": payload}
+        )
 
-    async def get_file_content(self, file_id: str, api_key: Optional[str] = None) -> dict:
-        """Get extracted text content from a file."""
-        return await self.get(f"/api/v1/files/{self._path_id(file_id)}/data/content", api_key)
+    async def get_file_content(
+        self,
+        file_id: str,
+        api_key: Optional[str] = None,
+        *,
+        knowledge_id: Optional[str] = None,
+        start_line: int = 1,
+        max_lines: int = 200,
+    ) -> dict:
+        """Get a bounded slice of extracted text from GET /api/v1/files/{id}/data/content."""
+        if knowledge_id:
+            await self._assert_file_in_knowledge(knowledge_id, file_id, api_key)
+        payload = await self.get(f"/api/v1/files/{self._path_id(file_id)}/data/content", api_key)
+        return project_bounded_file_content(payload, start_line=start_line, max_lines=max_lines)
 
     async def _upload_file_bytes(
         self,
@@ -827,8 +1262,17 @@ class OpenWebUIClient:
         content_type: str,
         api_key: Optional[str] = None,
         knowledge_id: Optional[str] = None,
+        *,
+        process: bool = True,
+        process_in_background: bool = True,
     ) -> dict:
-        """Upload file bytes and process synchronously."""
+        """Upload file bytes with Open WebUI's default background ingestion.
+
+        Open WebUI reads ``process`` and ``process_in_background`` from query params
+        (``routers/files.py``), not multipart form fields; only ``metadata`` is posted
+        as form data alongside the file. The HTTP response returns the file record while
+        ingestion may continue asynchronously when ``process_in_background`` is true.
+        """
         url = f"{self.base_url}/api/v1/files/"
         token = api_key or self.api_key
         headers = {"Accept": "application/json"}
@@ -836,21 +1280,33 @@ class OpenWebUIClient:
             headers["Authorization"] = f"Bearer {token}"
         metadata = {"knowledge_id": knowledge_id} if knowledge_id else {}
         files = {"file": (filename, data, content_type)}
-        form = {
-            "metadata": json.dumps(metadata),
-            "process": "true",
-            "process_in_background": "false",
+        params = {
+            "process": str(process).lower(),
+            "process_in_background": str(process_in_background).lower(),
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, headers=headers, files=files, data=form)
-            self._raise_for_status(response)
+        form = {"metadata": json.dumps(metadata)}
+        upload_timeout = (
+            FILE_UPLOAD_BACKGROUND_HTTP_TIMEOUT_SECONDS
+            if process_in_background
+            else FILE_UPLOAD_SYNC_HTTP_TIMEOUT_SECONDS
+        )
+        async with httpx.AsyncClient(timeout=upload_timeout) as client:
+            response = await client.post(
+                url,
+                headers=headers,
+                params=params,
+                data=form,
+                files=files,
+            )
+            self._raise_for_status(response, request_token=api_key or self.api_key)
             payload = response.json()
-            return payload if isinstance(payload, dict) else {"data": payload}
+            result = payload if isinstance(payload, dict) else {"data": payload}
+            return strip_file_content_fields(result)
 
     async def upload_text_file(
         self, filename: str, content: str, api_key: Optional[str] = None
     ) -> dict:
-        """Upload a UTF-8 text file and let Open WebUI process it synchronously."""
+        """Upload a UTF-8 text file with Open WebUI background processing (default)."""
         return await self._upload_file_bytes(
             filename, content.encode("utf-8"), "text/markdown", api_key
         )
@@ -864,9 +1320,15 @@ class OpenWebUIClient:
         file_id: Optional[str] = None,
         knowledge_id: Optional[str] = None,
         content_type: Optional[str] = None,
+        wait_for_processing: bool = False,
+        processing_wait_timeout_seconds: int = 30,
         api_key: Optional[str] = None,
     ) -> dict:
-        """Upload or attach a file to Open WebUI, optionally linking it to a knowledge base."""
+        """Upload or attach a file to Open WebUI, optionally linking it to a knowledge base.
+
+        Uploads enqueue ingestion in the background (Open WebUI default). When
+        ``wait_for_processing`` is set, poll status for up to ``processing_wait_timeout_seconds``.
+        """
         sources = sum(1 for value in (content, content_base64, file_id) if value is not None)
         if sources != 1:
             raise ValueError("Provide exactly one of content, content_base64, or file_id")
@@ -904,7 +1366,11 @@ class OpenWebUIClient:
             raise ValueError("uploaded content must be 10 MiB or smaller")
 
         uploaded = await self._upload_file_bytes(
-            name, data, resolved_type, api_key, knowledge_id=knowledge_id
+            name,
+            data,
+            resolved_type,
+            api_key,
+            knowledge_id=knowledge_id,
         )
         uploaded_id = uploaded.get("id") or uploaded.get("file_id")
         if not uploaded_id:
@@ -917,6 +1383,12 @@ class OpenWebUIClient:
         }
         if knowledge_id:
             result["knowledge_id"] = knowledge_id
+        if wait_for_processing:
+            result["processing"] = await self.wait_for_file_processing(
+                str(uploaded_id),
+                api_key,
+                timeout_seconds=processing_wait_timeout_seconds,
+            )
         return result
 
     async def add_file_to_knowledge(
@@ -1269,8 +1741,8 @@ class OpenWebUIClient:
     # ==========================================================================
 
     async def get_config(self, api_key: Optional[str] = None) -> dict:
-        """Get the full system configuration (admin only)."""
-        return await self.get("/api/v1/configs/export", api_key)
+        """Get system configuration with credentials and secrets redacted."""
+        return project_config_export(await self.get("/api/v1/configs/export", api_key))
 
     async def get_default_prompt_suggestions(self, api_key: Optional[str] = None) -> dict:
         """Get instance-wide prompt suggestions from the configuration export."""
@@ -1291,8 +1763,8 @@ class OpenWebUIClient:
         )
 
     async def export_config(self, api_key: Optional[str] = None) -> dict:
-        """Export full configuration (admin only)."""
-        return await self.get("/api/v1/configs/export", api_key)
+        """Export configuration with credentials and secrets redacted."""
+        return project_config_export(await self.get("/api/v1/configs/export", api_key))
 
     async def import_config(self, config: dict, api_key: Optional[str] = None) -> dict:
         """Import configuration (admin only)."""
@@ -1307,8 +1779,8 @@ class OpenWebUIClient:
         return await self.post("/api/v1/configs/banners", api_key, json={"banners": banners})
 
     async def get_models_config(self, api_key: Optional[str] = None) -> dict:
-        """Get default models configuration (admin only)."""
-        return await self.get("/api/v1/configs/models", api_key)
+        """Get default models configuration (admin only, allowlisted fields only)."""
+        return project_models_config(await self.get("/api/v1/configs/models", api_key))
 
     async def _get_connections_config(self, api_key: Optional[str] = None) -> dict[str, Any]:
         """Read provider settings from config export; callers must redact secrets."""
@@ -1337,7 +1809,7 @@ class OpenWebUIClient:
             connections.append(
                 {
                     "connection_index": index,
-                    "base_url": base_url,
+                    "base_url": sanitize_service_url(base_url),
                     "enabled": item.get("enable", True),
                     "model_ids": [value for value in model_ids if isinstance(value, str)],
                     "prefix_id": item.get("prefix_id"),
@@ -1444,9 +1916,12 @@ class OpenWebUIClient:
             data["MODEL_ORDER_LIST"] = model_order
         return await self.post("/api/v1/configs/models", api_key, json=data)
 
-    async def get_tool_servers(self, api_key: Optional[str] = None) -> dict:
-        """Get tool server connections (admin only)."""
+    async def _fetch_tool_servers_config(self, api_key: Optional[str] = None) -> dict[str, Any]:
         return await self.get("/api/v1/configs/tool_servers", api_key)
+
+    async def get_tool_servers(self, api_key: Optional[str] = None) -> dict:
+        """Get tool server connection metadata without auth material."""
+        return sanitize_tool_servers_config(await self._fetch_tool_servers_config(api_key))
 
     async def set_tool_servers(self, connections: list, api_key: Optional[str] = None) -> dict:
         """Set tool server connections (admin only)."""
@@ -1464,7 +1939,7 @@ class OpenWebUIClient:
         api_key: Optional[str] = None,
     ) -> dict:
         """Update one tool server's filter and optional description (admin only)."""
-        config = await self.get_tool_servers(api_key)
+        config = await self._fetch_tool_servers_config(api_key)
         connections = config.get("TOOL_SERVER_CONNECTIONS", [])
         matching = [
             connection
@@ -1479,7 +1954,8 @@ class OpenWebUIClient:
         if description is not None:
             connection.setdefault("info", {})["description"] = description
 
-        return await self.set_tool_servers(connections, api_key)
+        result = await self.set_tool_servers(connections, api_key)
+        return sanitize_tool_servers_config(result)
 
     # ==========================================================================
     # Notes Management

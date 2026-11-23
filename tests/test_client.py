@@ -85,9 +85,7 @@ async def test_list_knowledge_fetches_all_30_item_pages_and_compacts_records() -
 
     result = await client.list_knowledge(api_key="token")
 
-    assert [item["id"] for item in result["items"]] == [
-        f"knowledge-{index}" for index in range(45)
-    ]
+    assert [item["id"] for item in result["items"]] == [f"knowledge-{index}" for index in range(45)]
     assert result["total"] == 45
     assert result["items"][0] == {
         "id": "knowledge-0",
@@ -158,7 +156,12 @@ async def test_search_files_passes_filename_as_encoded_query_parameter() -> None
     client.get.assert_awaited_once_with(
         "/api/v1/files/search",
         "token",
-        params={"filename": "quarterly report & notes/*.pdf"},
+        params={
+            "filename": "quarterly report & notes/*.pdf",
+            "content": False,
+            "skip": 0,
+            "limit": 100,
+        },
     )
 
 
@@ -172,9 +175,7 @@ async def test_file_and_knowledge_ids_are_encoded_as_path_segments() -> None:
     await client.delete_knowledge("tenant/knowledge id")
 
     assert client.get.await_args.args == ("/api/v1/files/folder%2Ffile%20id", None)
-    client.delete.assert_awaited_once_with(
-        "/api/v1/knowledge/tenant%2Fknowledge%20id/delete", None
-    )
+    client.delete.assert_awaited_once_with("/api/v1/knowledge/tenant%2Fknowledge%20id/delete", None)
 
 
 @pytest.mark.asyncio
@@ -337,7 +338,8 @@ async def test_request_error_preserves_body_without_credentials() -> None:
         with pytest.raises(httpx.HTTPStatusError) as error:
             await client.post("/api/v1/tools/create", token, json={})
 
-    assert 'meta is required' in str(error.value)
+    assert "Request failed." in str(error.value)
+    assert "meta is required" not in str(error.value)
     assert token not in str(error.value)
 
 
