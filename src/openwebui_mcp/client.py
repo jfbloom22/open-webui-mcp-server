@@ -1978,7 +1978,7 @@ class OpenWebUIClient:
         return await self.post(
             "/api/v1/notes/create",
             api_key,
-            json={"title": title, "content": content},
+            json={"title": title, "data": {"content": {"md": content}}},
         )
 
     async def get_note(self, note_id: str, api_key: Optional[str] = None) -> dict:
@@ -1997,7 +1997,7 @@ class OpenWebUIClient:
         if title is not None:
             data["title"] = title
         if content is not None:
-            data["content"] = content
+            data["data"] = {"content": {"md": content}}
         return await self.post(f"/api/v1/notes/{self._path_id(note_id)}/update", api_key, json=data)
 
     async def delete_note(self, note_id: str, api_key: Optional[str] = None) -> dict:

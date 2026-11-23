@@ -40,6 +40,9 @@
 
 ### Changed
 
+- Note creation and updates now send markdown through Open WebUI's `data.content.md`
+  field. Automatic mutation Notes are removed; successful writes are logged and
+  return the persisted API result unchanged.
 - `create_model` and `update_model` validate non-empty `knowledge_ids` with
   `GET /api/v1/knowledge/{id}` before POST (unknown or inaccessible IDs fail
   before write).

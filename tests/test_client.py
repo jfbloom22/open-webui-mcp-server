@@ -204,6 +204,30 @@ async def test_mutation_routes_match_current_open_webui_source() -> None:
 
 
 @pytest.mark.asyncio
+async def test_note_create_and_update_use_open_webui_data_shape() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.post = AsyncMock(return_value={"id": "note-1"})
+
+    await client.create_note("Audit", "# Change recorded", "token")
+    await client.update_note("note-1", content="# Updated", api_key="token")
+
+    assert [call.args for call in client.post.await_args_list] == [
+        (
+            "/api/v1/notes/create",
+            "token",
+        ),
+        (
+            "/api/v1/notes/note-1/update",
+            "token",
+        ),
+    ]
+    assert [call.kwargs["json"] for call in client.post.await_args_list] == [
+        {"title": "Audit", "data": {"content": {"md": "# Change recorded"}}},
+        {"data": {"content": {"md": "# Updated"}}},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_folder_maps_project_configuration() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.post = AsyncMock(return_value={"id": "folder-1"})
