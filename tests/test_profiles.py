@@ -2,11 +2,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from openwebui_mcp import main
 
 
 def test_member_profile_allowlist_excludes_admin_surfaces() -> None:
+    assert "list_knowledge_files" in main.MEMBER_PROFILE_TOOLS
+    assert "get_file_processing_status" in main.MEMBER_PROFILE_TOOLS
+    assert "get_environment_info" in main.MEMBER_PROFILE_TOOLS
+    assert "validate_model_configuration" in main.MEMBER_PROFILE_TOOLS
     assert "update_model" in main.MEMBER_PROFILE_TOOLS
     assert "list_folders" in main.MEMBER_PROFILE_TOOLS
     assert "get_folder" in main.MEMBER_PROFILE_TOOLS
@@ -79,19 +84,52 @@ async def test_http_health_endpoint_is_live_without_mcp_auth() -> None:
 
 
 @pytest.mark.asyncio
+async def test_advertised_mcp_tool_names_uses_server_list_tools() -> None:
+    registered = [SimpleNamespace(name="list_models"), SimpleNamespace(name="get_model")]
+    list_tools = AsyncMock(return_value=registered)
+    with patch.object(main.mcp, "list_tools", list_tools):
+        names = await main.advertised_mcp_tool_names()
+
+    list_tools.assert_awaited_once_with(run_middleware=False)
+    assert names == ["get_model", "list_models"]
+
+
+@pytest.mark.asyncio
+async def test_get_environment_info_uses_advertised_tool_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
+
+    client = Mock()
+    client.get_environment_info = AsyncMock(
+        return_value={
+            "mcp_operations": {"active": ["list_models"]},
+        }
+    )
+    with (
+        patch.object(main, "get_client", return_value=client),
+        patch.object(main, "advertised_mcp_tool_names", AsyncMock(return_value=["list_models"])),
+    ):
+        result = await main.get_environment_info(Mock())
+
+    client.get_environment_info.assert_awaited_once()
+    assert client.get_environment_info.await_args.kwargs["active_operations"] == ["list_models"]
+    assert result["mcp_operations"]["active"] == ["list_models"]
+
+
+@pytest.mark.asyncio
 async def test_configure_member_profile_removes_unapproved_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MCP_PROFILE", "member")
     monkeypatch.delenv("OPENWEBUI_DISABLED_TOOLS", raising=False)
-    registered = [
-        SimpleNamespace(name=name) for name in ("list_models", "update_model", "delete_model")
-    ]
-    list_tools = AsyncMock(return_value=registered)
-    remove_tool = Mock()
     with (
-        patch.object(main.mcp, "list_tools", list_tools),
-        patch.object(main.mcp.local_provider, "remove_tool", remove_tool),
+        patch.object(
+            main,
+            "advertised_mcp_tool_names",
+            AsyncMock(return_value=["list_models", "update_model", "delete_model"]),
+        ),
+        patch.object(main.mcp.local_provider, "remove_tool", remove_tool := Mock()),
     ):
         await main.configure_tools()
 
@@ -104,18 +142,122 @@ async def test_configure_tools_applies_explicit_disables_and_profile(
 ) -> None:
     monkeypatch.setenv("MCP_PROFILE", "local")
     monkeypatch.setenv("OPENWEBUI_DISABLED_TOOLS", "list_users, missing_tool")
-    registered = [
-        SimpleNamespace(name=name) for name in ("list_models", "list_users", "delete_model")
-    ]
-    list_tools = AsyncMock(return_value=registered)
-    remove_tool = Mock()
     with (
-        patch.object(main.mcp, "list_tools", list_tools),
-        patch.object(main.mcp.local_provider, "remove_tool", remove_tool),
+        patch.object(
+            main,
+            "advertised_mcp_tool_names",
+            AsyncMock(return_value=["list_models", "list_users", "delete_model"]),
+        ),
+        patch.object(main.mcp.local_provider, "remove_tool", remove_tool := Mock()),
     ):
         await main.configure_tools()
 
     assert [call.args[0] for call in remove_tool.call_args_list] == ["delete_model", "list_users"]
+
+
+_CREATE_BASE = {"id": "m", "name": "Model", "base_model_id": "gpt-5"}
+
+
+@pytest.mark.parametrize(
+    ("param_cls", "null_field", "base_kwargs"),
+    [
+        ("ModelCreateParam", "capabilities", _CREATE_BASE),
+        ("ModelCreateParam", "builtin_tools", _CREATE_BASE),
+        ("ModelCreateParam", "skill_ids", _CREATE_BASE),
+        ("ModelCreateParam", "default_feature_ids", _CREATE_BASE),
+        ("ModelUpdateParam", "capabilities", {"model_id": "m"}),
+        ("ModelUpdateParam", "builtin_tools", {"model_id": "m"}),
+        ("ModelUpdateParam", "skill_ids", {"model_id": "m"}),
+        ("ModelUpdateParam", "default_feature_ids", {"model_id": "m"}),
+    ],
+)
+def test_model_schemas_reject_explicit_null_workspace_meta_fields(
+    param_cls: str,
+    null_field: str,
+    base_kwargs: dict,
+) -> None:
+    model_cls = getattr(main, param_cls)
+    with pytest.raises(ValidationError):
+        model_cls(**base_kwargs, **{null_field: None})
+
+
+def test_model_schemas_allow_empty_workspace_meta_patch_collections() -> None:
+    created = main.ModelCreateParam(
+        id="m",
+        name="Model",
+        base_model_id="gpt-5",
+        capabilities={},
+        builtin_tools={},
+        skill_ids=[],
+        default_feature_ids=[],
+    )
+    updated = main.ModelUpdateParam(
+        model_id="m",
+        capabilities={},
+        builtin_tools={},
+        skill_ids=[],
+        default_feature_ids=[],
+    )
+
+    assert created.capabilities == {}
+    assert created.skill_ids == []
+    assert updated.builtin_tools == {}
+    assert updated.default_feature_ids == []
+
+
+def test_model_schemas_allow_null_description_for_clear() -> None:
+    created = main.ModelCreateParam(
+        id="m",
+        name="Model",
+        base_model_id="gpt-5",
+        description=None,
+    )
+    updated = main.ModelUpdateParam(model_id="m", description=None)
+
+    assert created.description is None
+    assert updated.description is None
+
+
+def test_model_schemas_restrict_function_calling_values() -> None:
+    omitted = main.ModelCreateParam(id="m", name="Model", base_model_id="gpt-5")
+    assert omitted.function_calling is None
+
+    native = main.ModelCreateParam(
+        id="m",
+        name="Model",
+        base_model_id="gpt-5",
+        function_calling="native",
+    )
+    assert native.function_calling == "native"
+
+    with pytest.raises(ValidationError):
+        main.ModelCreateParam(
+            id="m",
+            name="Model",
+            base_model_id="gpt-5",
+            function_calling="compat",
+        )
+
+
+def test_model_tool_schemas_expose_extended_workspace_fields() -> None:
+    create_schema = main.ModelCreateParam.model_json_schema()
+    update_schema = main.ModelUpdateParam.model_json_schema()
+
+    for schema in (create_schema, update_schema):
+        assert {
+            "description",
+            "function_calling",
+            "capabilities",
+            "builtin_tools",
+            "skill_ids",
+            "default_feature_ids",
+        } <= set(schema["properties"])
+
+
+def test_file_content_read_schema_exposes_knowledge_scope() -> None:
+    schema = main.FileContentReadParam.model_json_schema()
+    assert schema["properties"]["file_id"]["type"] == "string"
+    assert "knowledge_id" in schema["properties"]
 
 
 def test_model_tool_schemas_expose_kind_filters_and_access_grants() -> None:
@@ -219,6 +361,71 @@ async def test_model_handlers_forward_sampling_and_reasoning_parameters(
 
 
 @pytest.mark.asyncio
+async def test_update_model_forwards_function_calling_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Mock()
+    client.update_model = AsyncMock(return_value={"id": "existing-model"})
+    monkeypatch.setattr(main, "get_client", lambda: client)
+    monkeypatch.setenv("MCP_PROFILE", "local")
+    monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
+
+    await main.update_model(
+        main.ModelUpdateParam(model_id="existing-model", function_calling="native"),
+        Mock(),
+    )
+
+    assert client.update_model.await_args.kwargs["params"] == {"function_calling": "native"}
+
+
+@pytest.mark.asyncio
+async def test_model_handlers_forward_workspace_meta_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Mock()
+    client.create_model = AsyncMock(return_value={"id": "new-model"})
+    client.update_model = AsyncMock(return_value={"id": "existing-model"})
+    monkeypatch.setattr(main, "get_client", lambda: client)
+    monkeypatch.setenv("MCP_PROFILE", "local")
+    monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
+
+    await main.create_model(
+        main.ModelCreateParam(
+            id="new-model",
+            name="New Model",
+            base_model_id="gpt-5",
+            description="Helper",
+            function_calling="native",
+            capabilities={"vision": False},
+            builtin_tools={"memory": False},
+            skill_ids=["skill-1"],
+            default_feature_ids=["web_search"],
+        ),
+        Mock(),
+    )
+    await main.update_model(
+        main.ModelUpdateParam(
+            model_id="existing-model",
+            capabilities={"web_search": True},
+            skill_ids=[],
+        ),
+        Mock(),
+    )
+
+    create_kwargs = client.create_model.await_args.kwargs
+    assert create_kwargs["params"]["function_calling"] == "native"
+    assert create_kwargs["description"] == "Helper"
+    assert create_kwargs["capabilities"] == {"vision": False}
+    assert create_kwargs["builtin_tools"] == {"memory": False}
+    assert create_kwargs["skill_ids"] == ["skill-1"]
+    assert create_kwargs["default_feature_ids"] == ["web_search"]
+
+    update_kwargs = client.update_model.await_args.kwargs
+    assert update_kwargs["capabilities"] == {"web_search": True}
+    assert update_kwargs["skill_ids"] == []
+
+
+@pytest.mark.asyncio
 async def test_model_handlers_forward_model_suggestion_prompts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,9 +435,7 @@ async def test_model_handlers_forward_model_suggestion_prompts(
     monkeypatch.setattr(main, "get_client", lambda: client)
     monkeypatch.setenv("MCP_PROFILE", "local")
     monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
-    suggestions = [
-        main.PromptSuggestionParam(title=["Reflect", "on today"], content="Reflect now")
-    ]
+    suggestions = [main.PromptSuggestionParam(title=["Reflect", "on today"], content="Reflect now")]
 
     await main.create_model(
         main.ModelCreateParam(
@@ -322,3 +527,32 @@ async def test_create_tool_schema_and_handler_forward_metadata(
         api_key="session-token",
     )
     assert result == {"id": "weather_tool"}
+
+
+@pytest.mark.asyncio
+async def test_audit_mutation_note_failure_logs_without_exception_body(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = Mock()
+    client.create_note = AsyncMock(
+        side_effect=ValueError("upstream secret-token detail must not appear in logs")
+    )
+    monkeypatch.setattr(main, "get_client", lambda: client)
+
+    with caplog.at_level("WARNING", logger="openwebui_mcp.main"):
+        result = await main.audit_mutation(
+            "model.update",
+            "custom",
+            ["name"],
+            {"id": "custom"},
+            "session-token",
+        )
+
+    assert result["id"] == "custom"
+    assert result["_audit"]["note_status"] == "failed"
+    assert result["_audit"]["note_error"] == "ValueError"
+    assert "secret-token" not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert "model.update" in caplog.text
+    assert "ValueError" in caplog.text

@@ -18,7 +18,7 @@ from typing import Any, Literal, Optional
 from fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field, model_validator
 
-from .client import OpenWebUIClient
+from .client import UNSET, OpenWebUIClient
 
 # Context variable to store the current user's token
 _current_user_token: ContextVar[Optional[str]] = ContextVar("current_user_token", default=None)
@@ -92,13 +92,27 @@ class AuthMiddleware:
 # Initialize MCP server
 mcp = FastMCP("openwebui-mcp-server")
 
+
+async def advertised_mcp_tool_names() -> list[str]:
+    """Sorted MCP tool names advertised by this server (post-``configure_tools`` when applicable).
+
+    Uses FastMCP 4 server ``await mcp.list_tools()`` (not the MCP client API).
+    """
+    tools = await mcp.list_tools(run_middleware=False)
+    return sorted(tool.name for tool in tools if getattr(tool, "name", None))
+
+
 MEMBER_PROFILE_TOOLS = {
     "get_current_user",
+    "get_environment_info",
     "list_models",
     "get_model",
+    "validate_model_configuration",
     "update_model",
     "list_knowledge_bases",
     "get_knowledge_base",
+    "list_knowledge_files",
+    "get_file_processing_status",
     "create_knowledge_base",
     "update_knowledge_base",
     "update_knowledge_access",
@@ -127,6 +141,31 @@ def get_client() -> OpenWebUIClient:
     if _client is None:
         _client = OpenWebUIClient()
     return _client
+
+
+def _unsetable_field(params: BaseModel, field_name: str) -> Any:
+    """Return UNSET when a caller omitted an optional patch field."""
+    if field_name in params.model_fields_set:
+        return getattr(params, field_name)
+    return UNSET
+
+
+_WORKSPACE_META_NO_NULL_FIELDS = (
+    "capabilities",
+    "builtin_tools",
+    "skill_ids",
+    "default_feature_ids",
+)
+
+
+def _reject_explicit_null_workspace_meta_fields(model: BaseModel) -> None:
+    """Reject JSON null for merge/clear fields; omission preserves, [] clears lists."""
+    for field_name in _WORKSPACE_META_NO_NULL_FIELDS:
+        if field_name in model.model_fields_set and getattr(model, field_name) is None:
+            raise ValueError(
+                f"{field_name} cannot be null; omit the field to preserve, "
+                "pass an empty object to merge without changes, or [] to clear list bindings"
+            )
 
 
 def get_user_token() -> Optional[str]:
@@ -174,7 +213,11 @@ async def audit_mutation(
     except Exception as exc:  # pragma: no cover - exercised through integration tests
         audit["note_status"] = "failed"
         audit["note_error"] = type(exc).__name__
-        logger.exception("Open WebUI mutation audit note failed for %s", action)
+        logger.warning(
+            "Open WebUI mutation audit note failed for %s (%s)",
+            action,
+            type(exc).__name__,
+        )
 
     return {**result, "_audit": audit}
 
@@ -271,10 +314,59 @@ class ModelCreateParam(BaseModel):
     access_grants: Optional[list[dict[str, Any]]] = Field(
         default=None, description="Open WebUI access grants"
     )
+    description: Optional[str] = Field(
+        default=None,
+        description="User-facing workspace model description stored in meta.description",
+    )
+    function_calling: Optional[Literal["native", "legacy"]] = Field(
+        default=None,
+        description="Tool-calling mode when supported: native or legacy",
+    )
+    capabilities: Optional[dict[str, bool]] = Field(
+        default=None,
+        description=(
+            "Capability flags merged into meta.capabilities; omit keys to preserve existing values"
+        ),
+    )
+    builtin_tools: Optional[dict[str, bool]] = Field(
+        default=None,
+        description="Per-tool builtin toggles merged into meta.builtinTools",
+    )
+    skill_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Skill IDs stored in meta.skillIds; pass an empty list to clear",
+    )
+    default_feature_ids: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Default UI feature IDs in meta.defaultFeatureIds; pass [] to store an "
+            "empty list (overrides instance defaults; unlike skill_ids)"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _reject_null_workspace_meta_fields(self) -> "ModelCreateParam":
+        _reject_explicit_null_workspace_meta_fields(self)
+        return self
 
 
 class ModelIdParam(BaseModel):
     model_id: str = Field(description="Model ID")
+
+
+class SavedModelGenerationTestParam(BaseModel):
+    model_id: str = Field(description="Saved custom Workspace model ID")
+    prompt: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Short user message for the smoke test (plain text only)",
+    )
+    max_output_tokens: int = Field(
+        default=128,
+        ge=1,
+        le=512,
+        description="Bounded max_tokens for the completion (default 128, max 512)",
+    )
 
 
 class ModelVisibilityParam(BaseModel):
@@ -357,6 +449,40 @@ class ModelUpdateParam(BaseModel):
     access_grants: Optional[list[dict[str, Any]]] = Field(
         default=None, description="Open WebUI access grants"
     )
+    description: Optional[str] = Field(
+        default=None,
+        description="User-facing workspace model description stored in meta.description",
+    )
+    function_calling: Optional[Literal["native", "legacy"]] = Field(
+        default=None,
+        description="Tool-calling mode when supported: native or legacy",
+    )
+    capabilities: Optional[dict[str, bool]] = Field(
+        default=None,
+        description=(
+            "Capability flags merged into meta.capabilities; omit keys to preserve existing values"
+        ),
+    )
+    builtin_tools: Optional[dict[str, bool]] = Field(
+        default=None,
+        description="Per-tool builtin toggles merged into meta.builtinTools",
+    )
+    skill_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Skill IDs stored in meta.skillIds; pass an empty list to clear",
+    )
+    default_feature_ids: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Default UI feature IDs in meta.defaultFeatureIds; pass [] to store an "
+            "empty list (overrides instance defaults; unlike skill_ids)"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _reject_null_workspace_meta_fields(self) -> "ModelUpdateParam":
+        _reject_explicit_null_workspace_meta_fields(self)
+        return self
 
 
 class KnowledgeCreateParam(BaseModel):
@@ -377,6 +503,17 @@ class KnowledgeUpdateParam(BaseModel):
 class KnowledgeAccessParam(BaseModel):
     knowledge_id: str = Field(description="Knowledge base ID")
     access_grants: list[dict[str, Any]] = Field(description="Open WebUI knowledge access grants")
+
+
+class KnowledgeFilesListParam(BaseModel):
+    knowledge_id: str = Field(description="Knowledge base ID")
+    page: int = Field(default=1, ge=1, description="Page number (Open WebUI uses page, not cursor)")
+    limit: int = Field(
+        default=30,
+        ge=1,
+        le=30,
+        description="Page size (capped at Open WebUI collection page size of 30)",
+    )
 
 
 class ToolServerConfigUpdateParam(BaseModel):
@@ -406,8 +543,43 @@ class FileIdParam(BaseModel):
     file_id: str = Field(description="File ID")
 
 
+class FileContentReadParam(BaseModel):
+    file_id: str = Field(description="File ID")
+    knowledge_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "When set, the file must be attached to this knowledge base before content is returned"
+        ),
+    )
+    start_line: int = Field(
+        default=1,
+        ge=1,
+        description="First line to return (1-based; default 1)",
+    )
+    max_lines: int = Field(
+        default=200,
+        ge=1,
+        le=500,
+        description="Maximum lines to return per call (default 200, hard max 500)",
+    )
+
+
 class FileSearchParam(BaseModel):
     filename: str = Field(description="Filename pattern (supports wildcards like *.pdf)")
+    knowledge_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "When set, search only within this knowledge base via "
+            "GET /api/v1/knowledge/{id}/files (not global /api/v1/files/search)"
+        ),
+    )
+    skip: int = Field(default=0, ge=0, description="Number of matching files to skip")
+    limit: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Maximum number of matching files to return (Open WebUI default 100)",
+    )
 
 
 class FileUploadParam(BaseModel):
@@ -451,6 +623,19 @@ class KnowledgeFileParam(BaseModel):
         default=None,
         description="Optional MIME type for uploaded content",
     )
+    wait_for_processing: bool = Field(
+        default=False,
+        description=(
+            "When uploading, poll background ingestion status until completed, failed, "
+            "or processing_wait_timeout_seconds (max 30)"
+        ),
+    )
+    processing_wait_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=30,
+        description="Max seconds to poll processing after upload (upload mode only, max 30)",
+    )
 
     @model_validator(mode="after")
     def validate_source(self) -> "KnowledgeFileParam":
@@ -464,6 +649,8 @@ class KnowledgeFileParam(BaseModel):
             raise ValueError("file_id must not be empty")
         if has_file_id and not self.knowledge_id:
             raise ValueError("knowledge_id is required when using file_id")
+        if has_file_id and self.wait_for_processing:
+            raise ValueError("wait_for_processing applies to uploads only, not file_id attach")
         if not has_file_id and (not self.filename or not self.filename.strip()):
             raise ValueError("filename is required when uploading content")
         if has_content and not self.content.strip():
@@ -625,7 +812,10 @@ class ChannelMessageIdParam(BaseModel):
 @mcp.tool()
 async def get_current_user(ctx: Context) -> dict[str, Any]:
     """Get the currently authenticated user's profile.
-    Returns your ID, name, email, role, and permissions."""
+
+    Returns ID, name, email, role, and permissions. Session bearer tokens are
+    never included (only a presence marker).
+    """
     return await get_client().get_current_user(get_user_token())
 
 
@@ -748,6 +938,59 @@ async def get_model(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def get_environment_info(ctx: Context) -> dict[str, Any]:
+    """Report Open WebUI version/deployment ID and MCP adapter capabilities.
+
+    Uses ``GET /api/version`` for Open WebUI metadata. Advertises only MCP tools
+    active for this process and MCP_PROFILE via ``advertised_mcp_tool_names`` (not a
+    static catalog).
+    Does not infer version from configuration export. Read-only.
+    """
+    profile = os.getenv("MCP_PROFILE", "local").lower()
+    active_operations = await advertised_mcp_tool_names()
+    return await get_client().get_environment_info(
+        get_user_token(),
+        mcp_profile=profile,
+        active_operations=active_operations,
+    )
+
+
+@mcp.tool()
+async def validate_model_configuration(params: ModelIdParam, ctx: Context) -> dict[str, Any]:
+    """Validate a saved custom model's references and stored settings.
+
+    All checks are for the **current authenticated caller** only; this tool does
+    not impersonate another user. Checks base-model availability in the caller's
+    effective catalog and tool/skill/knowledge bindings via supported read APIs.
+    Reports stored values separately from effective runtime fields (global gates
+    may block capabilities, builtin tools, and default features even when stored).
+    Read-only.
+    """
+    return await get_client().validate_model_configuration(params.model_id, get_user_token())
+
+
+@mcp.tool()
+async def test_saved_model_generation(
+    params: SavedModelGenerationTestParam, ctx: Context
+) -> dict[str, Any]:
+    """Run a bounded plain-generation smoke test against a saved custom model.
+
+    ADMIN / LOCAL ONLY (not exposed on the member profile). This invokes
+    ``POST /api/chat/completions`` with a single user message, ``stream=false``,
+    ``tools=[]``, ``tool_choice=none``, and explicit ``max_tokens``. It does
+    not pass ``chat_id``, session metadata, or model-attached tool IDs, and does
+    not run Open WebUI's native tool loop. **May incur provider cost**; call only
+    when you intend to spend tokens on a smoke test.
+    """
+    return await get_client().test_saved_model_generation(
+        params.model_id,
+        params.prompt,
+        max_output_tokens=params.max_output_tokens,
+        api_key=get_user_token(),
+    )
+
+
+@mcp.tool()
 async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]:
     """Create a model with model-level instructions, knowledge, tools, and quick-start suggestions.
 
@@ -771,6 +1014,8 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
         model_params["presence_penalty"] = params.presence_penalty
     if params.max_tokens is not None:
         model_params["max_tokens"] = params.max_tokens
+    if params.function_calling is not None:
+        model_params["function_calling"] = params.function_calling
     model_meta = {"toolIds": params.tool_ids} if params.tool_ids is not None else None
     if params.suggestion_prompts is not None:
         model_meta = model_meta or {}
@@ -786,6 +1031,11 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
         params=model_params if model_params else None,
         access_grants=params.access_grants,
         knowledge_ids=params.knowledge_ids,
+        description=_unsetable_field(params, "description"),
+        capabilities=_unsetable_field(params, "capabilities"),
+        builtin_tools=_unsetable_field(params, "builtin_tools"),
+        skill_ids=_unsetable_field(params, "skill_ids"),
+        default_feature_ids=_unsetable_field(params, "default_feature_ids"),
         api_key=token,
     )
     return await audit_mutation(
@@ -805,6 +1055,12 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
             "knowledge_ids",
             "suggestion_prompts",
             "access_grants",
+            "description",
+            "function_calling",
+            "capabilities",
+            "builtin_tools",
+            "skill_ids",
+            "default_feature_ids",
         ],
         result,
         token,
@@ -829,6 +1085,7 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
         or params.frequency_penalty is not None
         or params.presence_penalty is not None
         or params.max_tokens is not None
+        or params.function_calling is not None
     ):
         model_params = {}
         if params.system_prompt is not None:
@@ -845,6 +1102,8 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
             model_params["presence_penalty"] = params.presence_penalty
         if params.max_tokens is not None:
             model_params["max_tokens"] = params.max_tokens
+        if params.function_calling is not None:
+            model_params["function_calling"] = params.function_calling
     if params.system_prompt is not None:
         model_params = model_params or {}
         model_params["system"] = params.system_prompt
@@ -864,6 +1123,11 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
         base_model_id=params.base_model_id,
         access_grants=params.access_grants,
         knowledge_ids=params.knowledge_ids,
+        description=_unsetable_field(params, "description"),
+        capabilities=_unsetable_field(params, "capabilities"),
+        builtin_tools=_unsetable_field(params, "builtin_tools"),
+        skill_ids=_unsetable_field(params, "skill_ids"),
+        default_feature_ids=_unsetable_field(params, "default_feature_ids"),
         api_key=token,
     )
     return await audit_mutation(
@@ -880,14 +1144,20 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
                 "frequency_penalty": params.frequency_penalty,
                 "presence_penalty": params.presence_penalty,
                 "max_tokens": params.max_tokens,
+                "function_calling": params.function_calling,
                 "clear_params": params.clear_params,
                 "base_model_id": params.base_model_id,
                 "tool_ids": params.tool_ids,
                 "knowledge_ids": params.knowledge_ids,
                 "suggestion_prompts": params.suggestion_prompts,
                 "access_grants": params.access_grants,
+                "description": _unsetable_field(params, "description"),
+                "capabilities": _unsetable_field(params, "capabilities"),
+                "builtin_tools": _unsetable_field(params, "builtin_tools"),
+                "skill_ids": _unsetable_field(params, "skill_ids"),
+                "default_feature_ids": _unsetable_field(params, "default_feature_ids"),
             }.items()
-            if value is not None
+            if value is not UNSET and value is not None
         ],
         result,
         token,
@@ -969,8 +1239,30 @@ async def list_knowledge_bases(ctx: Context) -> dict[str, Any]:
 
 @mcp.tool()
 async def get_knowledge_base(params: KnowledgeIdParam, ctx: Context) -> dict[str, Any]:
-    """Get details for a knowledge base including file list."""
+    """Get knowledge-base metadata without embedded file content arrays."""
     return await get_client().get_knowledge(params.knowledge_id, get_user_token())
+
+
+@mcp.tool()
+async def list_knowledge_files(params: KnowledgeFilesListParam, ctx: Context) -> dict[str, Any]:
+    """List files in a knowledge base with metadata-only bounded pagination.
+
+    Uses ``GET /api/v1/knowledge/{id}/files`` with ``include_content=false``.
+    ``limit`` is capped at 30 (Open WebUI collection page size); ``next_page`` uses
+    that enforced page size.
+    """
+    return await get_client().list_knowledge_files(
+        params.knowledge_id,
+        get_user_token(),
+        page=params.page,
+        limit=params.limit,
+    )
+
+
+@mcp.tool()
+async def get_file_processing_status(params: FileIdParam, ctx: Context) -> dict[str, Any]:
+    """Get a file's ingestion/processing status (``GET /api/v1/files/{id}/process/status``)."""
+    return await get_client().get_file_processing_status(params.file_id, get_user_token())
 
 
 @mcp.tool()
@@ -1053,8 +1345,22 @@ async def upload_file(params: FileUploadParam, ctx: Context) -> dict[str, Any]:
 
 @mcp.tool()
 async def search_files(params: FileSearchParam, ctx: Context) -> dict[str, Any]:
-    """Search files by filename pattern. Supports wildcards like *.pdf"""
-    return await get_client().search_files(params.filename, get_user_token())
+    """Search uploaded files by filename pattern (metadata only).
+
+    Supports wildcards like ``*.pdf``. Global search uses ``GET /api/v1/files/search``
+    (user-scoped only; no knowledge filter). When ``knowledge_id`` is set, matches
+    within that collection via paginated ``GET /api/v1/knowledge/{id}/files`` (up to
+    34 pages). When the scan stops at that cap, ``scan_limit_reached`` is true and
+    results are not exhaustive. Extracted content is never included; use
+    ``get_file_content`` for bounded text reads.
+    """
+    return await get_client().search_files(
+        params.filename,
+        get_user_token(),
+        skip=params.skip,
+        limit=params.limit,
+        knowledge_id=params.knowledge_id,
+    )
 
 
 @mcp.tool()
@@ -1064,9 +1370,15 @@ async def get_file(params: FileIdParam, ctx: Context) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def get_file_content(params: FileIdParam, ctx: Context) -> dict[str, Any]:
-    """Get the extracted text content from a file."""
-    return await get_client().get_file_content(params.file_id, get_user_token())
+async def get_file_content(params: FileContentReadParam, ctx: Context) -> dict[str, Any]:
+    """Read a bounded slice of extracted text (default 200 lines, max 500 per call)."""
+    return await get_client().get_file_content(
+        params.file_id,
+        get_user_token(),
+        knowledge_id=params.knowledge_id,
+        start_line=params.start_line,
+        max_lines=params.max_lines,
+    )
 
 
 @mcp.tool()
@@ -1093,6 +1405,8 @@ async def add_knowledge_file(params: KnowledgeFileParam, ctx: Context) -> dict[s
         file_id=params.file_id,
         knowledge_id=params.knowledge_id,
         content_type=params.content_type,
+        wait_for_processing=params.wait_for_processing,
+        processing_wait_timeout_seconds=params.processing_wait_timeout_seconds,
         api_key=token,
     )
 
@@ -1534,7 +1848,10 @@ async def delete_channel_message(params: ChannelMessageIdParam, ctx: Context) ->
 
 @mcp.tool()
 async def get_system_config(ctx: Context) -> dict[str, Any]:
-    """Get system configuration. ADMIN ONLY."""
+    """Get system configuration. ADMIN ONLY.
+
+    Credential and token fields are redacted; presence is reported without values.
+    """
     return await get_client().get_config(get_user_token())
 
 
@@ -1571,7 +1888,10 @@ async def update_default_prompt_suggestions(
 
 @mcp.tool()
 async def export_config(ctx: Context) -> dict[str, Any]:
-    """Export full system configuration. ADMIN ONLY."""
+    """Export system configuration. ADMIN ONLY.
+
+    Credential and token fields are redacted; presence is reported without values.
+    """
     return await get_client().export_config(get_user_token())
 
 
@@ -1583,7 +1903,7 @@ async def get_banners(ctx: Context) -> dict[str, Any]:
 
 @mcp.tool()
 async def get_models_config(ctx: Context) -> dict[str, Any]:
-    """Get default models configuration. ADMIN ONLY."""
+    """Get default models configuration (allowlisted fields). ADMIN ONLY."""
     return await get_client().get_models_config(get_user_token())
 
 
@@ -1628,7 +1948,10 @@ async def set_connection_model_ids(
 
 @mcp.tool()
 async def get_tool_servers(ctx: Context) -> dict[str, Any]:
-    """Get tool server (MCP/OpenAPI) connections. ADMIN ONLY."""
+    """Get tool server (MCP/OpenAPI) connection metadata. ADMIN ONLY.
+
+    Auth headers, keys, and other credentials are never returned.
+    """
     return await get_client().get_tool_servers(get_user_token())
 
 
@@ -1671,7 +1994,7 @@ async def configure_tools() -> None:
     if profile not in {"local", "admin", "member"}:
         raise ValueError("MCP_PROFILE must be one of: local, admin, member")
 
-    registered_tools = {tool.name for tool in await mcp.list_tools()}
+    registered_tools = set(await advertised_mcp_tool_names())
     additional_disabled = {
         name.strip()
         for name in os.getenv("OPENWEBUI_DISABLED_TOOLS", "").split(",")

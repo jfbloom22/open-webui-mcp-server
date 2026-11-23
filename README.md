@@ -22,6 +22,18 @@ For one local client process, use stdio. For multiple simultaneous clients,
 use the shared, authenticated HTTP service. Both modes use `OPENWEBUI_API_KEY`
 from the local environment.
 
+- `get_current_user` returns allowlisted profile fields only and omits session
+  authentication tokens entirely (no presence marker). Admin configuration tools
+  (`get_system_config`, `export_config`, `get_models_config`, `get_model_connections`,
+  `get_tool_servers`) use allowlisted projections; credential config fields are
+  reported only as `{present: true/false}` without lengths or values.
+  Upstream non-JSON error bodies are not echoed to MCP clients.
+- `search_files` and file metadata tools never return extracted document
+  content. Use `get_file_content` for an explicit read; optional `knowledge_id`
+  verifies KB attachment via paginated `list_knowledge_files` (default cap 34
+  pages, ~1,020 files; override with `OPENWEBUI_KB_FILE_SCAN_MAX_PAGES`). If the cap
+  is hit before the listing ends, membership is inconclusive (not reported as "not
+  attached"). Scoped `search_files` uses the same cap and sets `scan_limit_reached`.
 - Delete tools are disabled before the server advertises its MCP tools.
 - Add further disabled tool names with `OPENWEBUI_DISABLED_TOOLS`, as a
   comma-separated list.
@@ -95,10 +107,7 @@ client SDK for protocol negotiation and tool discovery.
 ```python
 from openwebui_mcp.client import OpenWebUIClient
 
-client = OpenWebUIClient(
-    base_url="https://your-openwebui-instance.com",
-    api_key="your-api-key"
-)
+client = OpenWebUIClient(base_url="https://your-openwebui-instance.com", api_key="your-api-key")
 
 # List all users (admin only)
 users = await client.list_users()
@@ -121,7 +130,7 @@ model = await client.create_model(
     name="My Assistant",
     base_model_id="gpt-4",
     meta={"system": "You are a helpful assistant."},
-    params={"temperature": 0.7}
+    params={"temperature": 0.7},
 )
 ```
 
@@ -154,10 +163,13 @@ additional tools when needed.
 ### Model Management
 | Tool | Description | Permission |
 |------|-------------|------------|
+| `get_environment_info` | Read Open WebUI `GET /api/version` (version, deployment ID) plus MCP package version, `MCP_PROFILE`, and **active** MCP tools for this runtime (after profile/disable filtering) | Any |
 | `list_models` | List the authenticated user's effective models; filter with `kind=all`, `custom`, or `base` | Any |
 | `get_model` | Get model configuration | Any |
-| `create_model` | Create custom model with model-level instructions, knowledge collections, tools, and quick-start suggestions | Admin |
-| `update_model` | Update model-level instructions, knowledge collections, tools, settings, access grants, and quick-start suggestions while preserving the existing model form | Admin; member profile, permission-scoped |
+| `validate_model_configuration` | Read-only validation for the **current caller** of a saved custom model's base model, tools, skills, knowledge bindings, `params.function_calling`, and stored vs globally-gated settings | Any |
+| `test_saved_model_generation` | Explicit plain `POST /api/chat/completions` smoke test (no chat persistence, no tool loop); **may incur provider cost** | Admin; local profile only |
+| `create_model` | Create custom model with model-level instructions, knowledge collections, tools, capabilities, builtin tools, skills, default features, and quick-start suggestions | Admin |
+| `update_model` | Update model-level instructions, knowledge collections, tools, `function_calling`, capabilities, builtin tools, skills, default features, settings, access grants, and quick-start suggestions while preserving omitted fields | Admin; member profile, permission-scoped |
 | `set_model_visibility` | Hide or show a base or Workspace model in the selector without changing whether it can be used | Admin |
 | `set_model_enabled` | Enable or disable a base or Workspace model instance-wide | Admin |
 | `update_model_access` | Set grants for a custom, provider, or base model | Admin |
@@ -185,8 +197,39 @@ saved record, it creates the metadata override used by Open WebUI's own Models
 workspace. `set_model_enabled` changes `is_active`, which controls whether the
 model can be used. Both tools are idempotent and preserve existing model fields.
 
+`get_environment_info` calls Open WebUI `GET /api/version` and never derives
+version information from configuration export. Its `mcp_operations.active` list
+comes from the FastMCP server inventory (`advertised_mcp_tool_names` →
+`await mcp.list_tools()`) after `MCP_PROFILE` and `OPENWEBUI_DISABLED_TOOLS` filtering,
+not a static catalog.
+
+`test_saved_model_generation` is not on the member profile. It sends one user
+message with `tools=[]`, `tool_choice=none`, and bounded `max_tokens` only;
+it does not pass `chat_id` or model-attached tools. Reports
+`model_version_observed_before_call` from the model record but does not claim an
+atomic version pin (concurrent edits may race). Native tool execution and browser
+rendering are reported as `not_tested`.
+
+`validate_model_configuration` is read-only and scoped to the authenticated
+caller forwarded on the current session (no impersonation). It does not run chats.
+Omitted `params.function_calling` is reported with effective source
+`openwebui_default` and value `native`, matching Open WebUI chat metadata
+resolution. Unsupported stored modes fail validation. `capabilities`,
+`builtin_tools`, and `default_feature_ids` return `stored_value` separately from
+`effective`, which stays `unknown` when global gates may block stored switches.
+
 `create_model` and `update_model` accept `system_prompt` and `knowledge_ids` for
-model-level configuration. `create_folder` and `update_folder` accept the same
+model-level configuration. They also accept `description`, `function_calling`
+(`native` or `legacy`), `capabilities`, `builtin_tools`, `skill_ids`, and
+`default_feature_ids`, mapping to Open WebUI's workspace model form
+(`meta.description`, `params.function_calling`, `meta.capabilities`,
+`meta.builtinTools`, `meta.skillIds`, and `meta.defaultFeatureIds`). Object
+fields merge by key; omitted fields leave existing values unchanged. ``skill_ids``
+``[]`` clears ``meta.skillIds`` (no instance default fallback). ``default_feature_ids``
+``[]`` persists ``meta.defaultFeatureIds: []`` so Open WebUI does not re-inherit
+instance defaults (matches ModelEditor behavior). `tool_ids` are validated against `list_tools`
+when provided. `knowledge_ids` are validated with `GET /api/v1/knowledge/{id}` when
+non-empty. `create_folder` and `update_folder` accept the same
 concepts for folder/project-level configuration. `knowledge_ids` are Open WebUI
 Knowledge Base IDs. On update, collection references are replaced while direct
 file and note attachments are preserved. Folder settings apply to chats created
@@ -235,17 +278,28 @@ Member profiles do not expose these connector tools.
 | Tool | Description | Permission |
 |------|-------------|------------|
 | `list_knowledge_bases` | List knowledge bases | Any |
-| `get_knowledge_base` | Get knowledge base details | Any |
+| `get_knowledge_base` | Get knowledge-base metadata (embedded file arrays omitted; no extracted content) | Any |
+| `list_knowledge_files` | Paginated metadata-only file listing for one knowledge base | Any with read access |
 | `create_knowledge_base` | Create knowledge base | Any |
 | `update_knowledge_base` | Update knowledge base name/description | Owner |
 | `update_knowledge_access` | Replace knowledge base access grants | Owner, write access, or admin |
 | `delete_knowledge_base` | Delete knowledge base | Owner |
 | `add_knowledge_file` | Upload text/binary content or attach an existing file to a knowledge base | Member profile |
 
+`get_knowledge_base` uses `GET /api/v1/knowledge/{id}` and projects safe KB fields
+only. Use `list_knowledge_files` (`GET /api/v1/knowledge/{id}/files`,
+`include_content=false`, `page`/`limit`) for file metadata. MCP caps `limit` at 30
+(Open WebUI collection page size); `next_page` uses that enforced size.
+
 `add_knowledge_file` accepts exactly one source: `content` (markdown/text),
 `content_base64` (binary), or `file_id` (already uploaded, e.g. from chat
 `<attached_files>`). Uploads are capped at 10 MiB. `knowledge_id` is required
-for `file_id` attaches.
+for `file_id` attaches. Byte uploads pass `process_in_background=true` as query
+params (Open WebUI default; multipart form fields are ignored). The upload response
+returns file metadata while ingestion continues in the background. Set
+`wait_for_processing=true` to poll `GET /api/v1/files/{id}/process/status`
+(`stream=false`) for up to 30 seconds after upload (per-status HTTP timeout capped to
+the remaining poll budget).
 
 `update_knowledge_access` sends Open WebUI's exact access form,
 `{"access_grants": [...]}`, to the dedicated knowledge access endpoint. Grant
@@ -265,9 +319,10 @@ and chat mutations.
 |------|-------------|------------|
 | `upload_file` | Upload an absolute local file path, optionally linking it to a knowledge base | Any, subject to Open WebUI permissions |
 | `list_files` | List uploaded files | Any |
-| `search_files` | Search uploaded files by filename | Any |
-| `get_file` | Get file metadata | Any |
-| `get_file_content` | Get extracted file content | Any |
+| `search_files` | Search by filename; global `GET /api/v1/files/search` or, with `knowledge_id`, paginated `GET /api/v1/knowledge/{id}/files` (max 34 pages; `scan_limit_reached` when capped) | Any |
+| `get_file` | Get content-free file metadata including listing fields (`user_id`, timestamps, hash) | Any |
+| `get_file_processing_status` | Read ingestion status (`pending`, `processing`, `completed`, `failed`) | Any with file read access |
+| `get_file_content` | Bounded extracted text (default 200 lines, max 500); optional `knowledge_id` enforces KB membership | Any |
 | `update_file_content` | Update extracted text content | File owner/write access |
 
 ### Chat Management
@@ -283,7 +338,7 @@ and chat mutations.
 |------|-------------|------------|
 | `list_tools` | List available tools | Any |
 | `list_functions` | List functions/filters | Any |
-| `get_system_config` | Get full system config via Open WebUI's `/api/v1/configs/export` endpoint | Admin |
+| `get_system_config` | Allowlisted export from Open WebUI `/api/v1/configs/export` (credentials as `{present}` only) | Admin |
 | `get_default_prompt_suggestions` | Get instance-wide fallback quick-start suggestions | Admin |
 | `update_default_prompt_suggestions` | Update instance-wide fallback quick-start suggestions | Admin |
 
