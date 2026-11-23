@@ -479,7 +479,6 @@ async def test_update_knowledge_access_forwards_token_and_preserves_api_response
             "files": [],
         }
     )
-    client.create_note = AsyncMock(return_value={"id": "note-1"})
     monkeypatch.setattr(main, "get_client", lambda: client)
     monkeypatch.setenv("MCP_PROFILE", "local")
     monkeypatch.setenv("OPENWEBUI_API_KEY", "session-token")
@@ -493,7 +492,13 @@ async def test_update_knowledge_access_forwards_token_and_preserves_api_response
     assert result["id"] == "knowledge-1"
     assert result["access_grants"] == grants
     assert result["files"] == []
-    assert result["_audit"]["action"] == "knowledge.access.update"
+    assert result == {
+        "id": "knowledge-1",
+        "name": "Research",
+        "description": "Existing description",
+        "access_grants": grants,
+        "files": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -529,30 +534,12 @@ async def test_create_tool_schema_and_handler_forward_metadata(
     assert result == {"id": "weather_tool"}
 
 
-@pytest.mark.asyncio
-async def test_audit_mutation_note_failure_logs_without_exception_body(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_log_mutation_logs_action_and_returns_result_unchanged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    client = Mock()
-    client.create_note = AsyncMock(
-        side_effect=ValueError("upstream secret-token detail must not appear in logs")
-    )
-    monkeypatch.setattr(main, "get_client", lambda: client)
+    result = {"id": "custom"}
+    with caplog.at_level("INFO", logger="openwebui_mcp.main"):
+        returned = main.log_mutation("model.update", "custom", ["name"], result)
 
-    with caplog.at_level("WARNING", logger="openwebui_mcp.main"):
-        result = await main.audit_mutation(
-            "model.update",
-            "custom",
-            ["name"],
-            {"id": "custom"},
-            "session-token",
-        )
-
-    assert result["id"] == "custom"
-    assert result["_audit"]["note_status"] == "failed"
-    assert result["_audit"]["note_error"] == "ValueError"
-    assert "secret-token" not in caplog.text
-    assert "Traceback" not in caplog.text
+    assert returned is result
     assert "model.update" in caplog.text
-    assert "ValueError" in caplog.text

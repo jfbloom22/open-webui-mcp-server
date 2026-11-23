@@ -179,47 +179,23 @@ def get_user_token() -> Optional[str]:
     return os.getenv("OPENWEBUI_API_KEY")
 
 
-async def audit_mutation(
-    action: str,
-    target: str,
-    changed_fields: list[str],
-    result: dict[str, Any],
-    api_key: Optional[str],
+def log_mutation(
+    action: str, target: str, changed_fields: list[str], result: dict[str, Any]
 ) -> dict[str, Any]:
-    """Record a successful mutation without hiding the primary API result."""
-    audit = {
-        "action": action,
-        "target": target,
-        "changed_fields": changed_fields,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    logger.info("openwebui_mutation %s", json.dumps(audit, sort_keys=True))
-
-    try:
-        note = await get_client().create_note(
-            title=f"Open WebUI change: {action}",
-            content=(
-                "# Open WebUI change\n\n"
-                f"- Action: `{action}`\n"
-                f"- Target: `{target}`\n"
-                f"- Changed fields: "
-                f"{', '.join(f'`{field}`' for field in changed_fields) or 'none'}\n"
-                f"- Timestamp: `{audit['timestamp']}`\n"
-            ),
-            api_key=api_key,
-        )
-        audit["note_id"] = note.get("id")
-        audit["note_status"] = "created"
-    except Exception as exc:  # pragma: no cover - exercised through integration tests
-        audit["note_status"] = "failed"
-        audit["note_error"] = type(exc).__name__
-        logger.warning(
-            "Open WebUI mutation audit note failed for %s (%s)",
-            action,
-            type(exc).__name__,
-        )
-
-    return {**result, "_audit": audit}
+    """Log a successful mutation and return the API result unchanged."""
+    logger.info(
+        "openwebui_mutation %s",
+        json.dumps(
+            {
+                "action": action,
+                "target": target,
+                "changed_fields": changed_fields,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            sort_keys=True,
+        ),
+    )
+    return result
 
 
 # =============================================================================
@@ -1038,7 +1014,7 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
         default_feature_ids=_unsetable_field(params, "default_feature_ids"),
         api_key=token,
     )
-    return await audit_mutation(
+    return log_mutation(
         "model.create",
         params.id,
         [
@@ -1063,7 +1039,6 @@ async def create_model(params: ModelCreateParam, ctx: Context) -> dict[str, Any]
             "default_feature_ids",
         ],
         result,
-        token,
     )
 
 
@@ -1130,7 +1105,7 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
         default_feature_ids=_unsetable_field(params, "default_feature_ids"),
         api_key=token,
     )
-    return await audit_mutation(
+    return log_mutation(
         "model.update",
         params.model_id,
         [
@@ -1160,7 +1135,6 @@ async def update_model(params: ModelUpdateParam, ctx: Context) -> dict[str, Any]
             if value is not UNSET and value is not None
         ],
         result,
-        token,
     )
 
 
@@ -1175,12 +1149,11 @@ async def set_model_visibility(params: ModelVisibilityParam, ctx: Context) -> di
     result = await get_client().set_model_visibility(params.model_id, params.visible, token)
     if not result.get("changed"):
         return result
-    return await audit_mutation(
+    return log_mutation(
         "model.visibility.set",
         params.model_id,
         ["meta.hidden"],
         result,
-        token,
     )
 
 
@@ -1195,12 +1168,11 @@ async def set_model_enabled(params: ModelEnabledParam, ctx: Context) -> dict[str
     result = await get_client().set_model_enabled(params.model_id, params.enabled, token)
     if not result.get("changed"):
         return result
-    return await audit_mutation(
+    return log_mutation(
         "model.enabled.set",
         params.model_id,
         ["is_active"],
         result,
-        token,
     )
 
 
@@ -1221,9 +1193,7 @@ async def update_model_access(params: ModelAccessParam, ctx: Context) -> dict[st
     result = await get_client().update_model_access(
         params.model_id, params.access_grants, params.name, token
     )
-    return await audit_mutation(
-        "model.access.update", params.model_id, ["access_grants"], result, token
-    )
+    return log_mutation("model.access.update", params.model_id, ["access_grants"], result)
 
 
 # =============================================================================
@@ -1270,9 +1240,7 @@ async def create_knowledge_base(params: KnowledgeCreateParam, ctx: Context) -> d
     """Create a new knowledge base for RAG."""
     token = get_user_token()
     result = await get_client().create_knowledge(params.name, params.description, token)
-    return await audit_mutation(
-        "knowledge.create", params.name, ["name", "description"], result, token
-    )
+    return log_mutation("knowledge.create", params.name, ["name", "description"], result)
 
 
 @mcp.tool()
@@ -1282,7 +1250,7 @@ async def update_knowledge_base(params: KnowledgeUpdateParam, ctx: Context) -> d
     result = await get_client().update_knowledge(
         params.knowledge_id, params.name, params.description, token
     )
-    return await audit_mutation(
+    return log_mutation(
         "knowledge.update",
         params.knowledge_id,
         [
@@ -1294,7 +1262,6 @@ async def update_knowledge_base(params: KnowledgeUpdateParam, ctx: Context) -> d
             if value is not None
         ],
         result,
-        token,
     )
 
 
@@ -1305,12 +1272,11 @@ async def update_knowledge_access(params: KnowledgeAccessParam, ctx: Context) ->
     result = await get_client().update_knowledge_access(
         params.knowledge_id, params.access_grants, token
     )
-    return await audit_mutation(
+    return log_mutation(
         "knowledge.access.update",
         params.knowledge_id,
         ["access_grants"],
         result,
-        token,
     )
 
 
@@ -1417,12 +1383,11 @@ async def add_knowledge_file(params: KnowledgeFileParam, ctx: Context) -> dict[s
         audit_fields.extend(["filename", "content" if params.content else "content_base64"])
 
     resource_id = params.knowledge_id or result.get("file_id") or params.file_id or "unknown"
-    return await audit_mutation(
+    return log_mutation(
         "knowledge.file.add",
         resource_id,
         audit_fields,
         result,
-        token,
     )
 
 
@@ -1499,7 +1464,7 @@ async def add_memory(params: MemoryAddParam, ctx: Context) -> dict[str, Any]:
     """Add a new memory to your memory store."""
     token = get_user_token()
     result = await get_client().add_memory(params.content, token)
-    return await audit_mutation("memory.add", "current-user", ["content"], result, token)
+    return log_mutation("memory.add", "current-user", ["content"], result)
 
 
 @mcp.tool()
@@ -1513,7 +1478,7 @@ async def update_memory(params: MemoryUpdateParam, ctx: Context) -> dict[str, An
     """Update an existing memory."""
     token = get_user_token()
     result = await get_client().update_memory(params.memory_id, params.content, token)
-    return await audit_mutation("memory.update", params.memory_id, ["content"], result, token)
+    return log_mutation("memory.update", params.memory_id, ["content"], result)
 
 
 @mcp.tool()
@@ -1599,7 +1564,7 @@ async def create_folder(params: FolderCreateParam, ctx: Context) -> dict[str, An
     result = await get_client().create_folder(
         params.name, params.system_prompt, params.knowledge_ids, token
     )
-    return await audit_mutation(
+    return log_mutation(
         "folder.create",
         params.name,
         [
@@ -1612,7 +1577,6 @@ async def create_folder(params: FolderCreateParam, ctx: Context) -> dict[str, An
             if value is not None
         ],
         result,
-        token,
     )
 
 
@@ -1650,7 +1614,7 @@ async def update_folder(params: FolderUpdateParam, ctx: Context) -> dict[str, An
         knowledge_ids=params.knowledge_ids,
         api_key=token,
     )
-    return await audit_mutation("folder.update", params.folder_id, changed_fields, result, token)
+    return log_mutation("folder.update", params.folder_id, changed_fields, result)
 
 
 @mcp.tool()
@@ -1877,12 +1841,11 @@ async def update_default_prompt_suggestions(
     token = get_user_token()
     suggestions = [suggestion.model_dump() for suggestion in params.suggestions]
     result = await get_client().set_default_prompt_suggestions(suggestions, token)
-    return await audit_mutation(
+    return log_mutation(
         "prompt_suggestions.defaults.update",
         "ui.prompt_suggestions",
         ["suggestions"],
         result,
-        token,
     )
 
 
@@ -1937,12 +1900,11 @@ async def set_connection_model_ids(
     )
     if not result.get("changed", True):
         return result
-    return await audit_mutation(
+    return log_mutation(
         "provider_connection.model_ids.update",
         f"connection:{params.connection_index}",
         ["model_ids"],
         result,
-        token,
     )
 
 
@@ -1971,7 +1933,7 @@ async def update_tool_server_config(
         params.description,
         token,
     )
-    return await audit_mutation(
+    return log_mutation(
         "tool_server.config.update",
         params.server_id,
         [
@@ -1979,7 +1941,6 @@ async def update_tool_server_config(
             *(["description"] if params.description is not None else []),
         ],
         result,
-        token,
     )
 
 
