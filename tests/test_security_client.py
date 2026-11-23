@@ -12,6 +12,7 @@ from openwebui_mcp.security import (
     sanitize_current_user,
     sanitize_error_detail,
     sanitize_service_url,
+    sanitize_value,
 )
 
 
@@ -60,6 +61,29 @@ def test_sanitize_current_user_omits_session_token_entirely() -> None:
     assert "token" not in result
     assert "jwt-session-token-value" not in str(result)
     assert "unexpected" not in result
+
+
+def test_sanitize_value_bounds_nested_response_size_and_depth() -> None:
+    nested: dict[str, object] = {"apiKey": "must-not-escape"}
+    for _ in range(25):
+        nested = {"nested": nested}
+
+    result = sanitize_value(
+        {
+            "deep": nested,
+            "long": "x" * 3000,
+            "items": list(range(500)),
+            "mapping": {f"item-{index}": index for index in range(500)},
+        }
+    )
+
+    assert result["long"] == "x" * 1999 + "…"
+    assert len(result["items"]) == 201
+    assert result["items"][-1] == "[truncated]"
+    assert len(result["mapping"]) == 201
+    assert result["mapping"]["_truncated"] is True
+    assert "must-not-escape" not in str(result)
+    assert "[truncated]" in str(result["deep"])
 
 
 def test_nested_allowlisted_config_redacts_generic_credential_key_shapes() -> None:

@@ -53,7 +53,8 @@
   `knowledge_ids`, `status`, `content_type`, `size`) without raw `meta`/`data`.
 - `get_system_config`, `export_config`, `get_models_config`, and `get_tool_servers`
   use allowlisted projections; credential fields are `{present}` only. HTTP errors
-  omit non-JSON upstream bodies.
+  omit non-JSON upstream bodies. Nested sanitized responses have depth, item-count,
+  and string-size bounds.
 - `get_file_content` knowledge scoping checks membership via paginated
   `list_knowledge_files`; scan cap errors when inconclusive (configurable via
   `OPENWEBUI_KB_FILE_SCAN_MAX_PAGES`).

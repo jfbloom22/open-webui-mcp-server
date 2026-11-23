@@ -27,6 +27,7 @@ from the local environment.
   (`get_system_config`, `export_config`, `get_models_config`, `get_model_connections`,
   `get_tool_servers`) use allowlisted projections; credential config fields are
   reported only as `{present: true/false}` without lengths or values.
+  Nested sanitized responses are bounded by depth, item count, and string size.
   Upstream non-JSON error bodies are not echoed to MCP clients.
 - `search_files` and file metadata tools never return extracted document
   content. Use `get_file_content` for an explicit read; optional `knowledge_id`

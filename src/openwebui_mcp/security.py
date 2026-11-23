@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from itertools import islice
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -61,6 +62,9 @@ _REDACTED_URL = "[redacted-url]"
 _GENERIC_ERROR_DETAIL = "Request failed."
 _MAX_SAFE_STRING_CHARS = 2000
 _MAX_CONFIG_LIST_ITEMS = 200
+_MAX_SANITIZED_NESTING = 20
+_MAX_SANITIZED_ITEMS = 200
+_SANITIZED_TRUNCATION_MARKER = "[truncated]"
 
 CURRENT_USER_FIELDS: tuple[str, ...] = (
     "id",
@@ -157,7 +161,9 @@ def secret_presence(value: Any) -> dict[str, bool]:
 
 
 def _is_presence_marker(value: Any) -> bool:
-    return isinstance(value, dict) and set(value) <= {"present"}
+    return (
+        isinstance(value, dict) and set(value) == {"present"} and isinstance(value["present"], bool)
+    )
 
 
 def _normalize_sensitive_key_name(key: str) -> str:
@@ -302,20 +308,33 @@ def project_models_config(payload: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
-def sanitize_value(value: Any) -> Any:
-    """Recursively redact sensitive values in structured data (errors and nested dicts)."""
+def sanitize_value(value: Any, *, _depth: int = 0) -> Any:
+    """Redact secrets and bound the size/depth of structured MCP responses."""
+    if _depth >= _MAX_SANITIZED_NESTING:
+        return _SANITIZED_TRUNCATION_MARKER
+    if isinstance(value, str):
+        if len(value) > _MAX_SAFE_STRING_CHARS:
+            return value[: _MAX_SAFE_STRING_CHARS - 1] + "…"
+        return value
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
-        for key, item in value.items():
+        for key, item in islice(value.items(), _MAX_SANITIZED_ITEMS):
             if _is_presence_marker(item):
                 sanitized[key] = item
             elif _is_sensitive_key(str(key)):
                 sanitized[key] = secret_presence(item)
             else:
-                sanitized[key] = sanitize_value(item)
+                sanitized[key] = sanitize_value(item, _depth=_depth + 1)
+        if len(value) > _MAX_SANITIZED_ITEMS:
+            sanitized["_truncated"] = True
         return sanitized
     if isinstance(value, list):
-        return [sanitize_value(item) for item in value]
+        sanitized = [
+            sanitize_value(item, _depth=_depth + 1) for item in value[:_MAX_SANITIZED_ITEMS]
+        ]
+        if len(value) > _MAX_SANITIZED_ITEMS:
+            sanitized.append(_SANITIZED_TRUNCATION_MARKER)
+        return sanitized
     return value
 
 
