@@ -28,6 +28,16 @@ def test_member_profile_allowlist_excludes_admin_surfaces() -> None:
     assert "set_model_visibility" not in main.MEMBER_PROFILE_TOOLS
     assert "set_model_enabled" not in main.MEMBER_PROFILE_TOOLS
     assert not any(name.startswith("delete_") for name in main.MEMBER_PROFILE_TOOLS)
+    assert "set_skill_active" not in main.MEMBER_PROFILE_TOOLS
+
+
+def test_delete_skill_is_the_only_delete_tool_exempt_from_global_filter() -> None:
+    registered = {"delete_skill", "delete_model", "set_skill_active"}
+    globally_blocked = {
+        name for name in registered if name.startswith("delete_") and name != "delete_skill"
+    }
+
+    assert globally_blocked == {"delete_model"}
 
 
 def test_deployed_profiles_require_forwarded_session_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,13 +137,16 @@ async def test_configure_member_profile_removes_unapproved_tools(
         patch.object(
             main,
             "advertised_mcp_tool_names",
-            AsyncMock(return_value=["list_models", "update_model", "delete_model"]),
+            AsyncMock(return_value=["list_models", "update_model", "delete_model", "delete_skill"]),
         ),
         patch.object(main.mcp.local_provider, "remove_tool", remove_tool := Mock()),
     ):
         await main.configure_tools()
 
-    remove_tool.assert_called_once_with("delete_model")
+    assert [call.args[0] for call in remove_tool.call_args_list] == [
+        "delete_model",
+        "delete_skill",
+    ]
 
 
 @pytest.mark.asyncio
@@ -146,13 +159,14 @@ async def test_configure_tools_applies_explicit_disables_and_profile(
         patch.object(
             main,
             "advertised_mcp_tool_names",
-            AsyncMock(return_value=["list_models", "list_users", "delete_model"]),
+            AsyncMock(return_value=["list_models", "list_users", "delete_model", "delete_skill"]),
         ),
         patch.object(main.mcp.local_provider, "remove_tool", remove_tool := Mock()),
     ):
         await main.configure_tools()
 
     assert [call.args[0] for call in remove_tool.call_args_list] == ["delete_model", "list_users"]
+    assert "delete_skill" not in [call.args[0] for call in remove_tool.call_args_list]
 
 
 _CREATE_BASE = {"id": "m", "name": "Model", "base_model_id": "gpt-5"}
