@@ -179,6 +179,33 @@ async def test_file_and_knowledge_ids_are_encoded_as_path_segments() -> None:
 
 
 @pytest.mark.asyncio
+async def test_skill_mutations_use_open_webui_routes_and_encoded_ids() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.delete = AsyncMock(return_value=True)
+    client.get = AsyncMock(return_value={"id": "skill-1", "is_active": True})
+    client.post = AsyncMock(return_value={"id": "skill-1", "is_active": False})
+
+    await client.delete_skill("skill-1", "token")
+    await client.set_skill_active("skill-1", False, "token")
+
+    client.delete.assert_awaited_once_with("/api/v1/skills/id/skill-1/delete", "token")
+    client.get.assert_awaited_once_with("/api/v1/skills/id/skill-1", "token")
+    client.post.assert_awaited_once_with("/api/v1/skills/id/skill-1/toggle", "token")
+
+
+@pytest.mark.asyncio
+async def test_set_skill_active_skips_toggle_when_already_in_requested_state() -> None:
+    client = OpenWebUIClient(base_url="https://webui.example")
+    client.get = AsyncMock(return_value={"id": "skill-1", "is_active": True})
+    client.post = AsyncMock()
+
+    result = await client.set_skill_active("skill-1", True, "token")
+
+    assert result["is_active"] is True
+    client.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_mutation_routes_match_current_open_webui_source() -> None:
     client = OpenWebUIClient(base_url="https://webui.example")
     client.delete = AsyncMock(return_value={})

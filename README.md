@@ -138,8 +138,9 @@ model = await client.create_model(
 ## Available Tools
 
 The tables below describe the local runtime's broad administrative inventory.
-It does not advertise delete tools. Use `OPENWEBUI_DISABLED_TOOLS` to exclude
-additional tools when needed.
+`delete_skill` is the only delete operation exposed, in local and admin
+profiles. It remains unavailable in the member profile. Use
+`OPENWEBUI_DISABLED_TOOLS` to exclude additional tools when needed.
 
 ### User Management
 | Tool | Description | Permission |
@@ -274,6 +275,15 @@ Open WebUI's config export and imports only `openai.api_configs`, so it does
 not submit API keys or replace unrelated settings. API keys are never returned
 in MCP results, audit notes, or error messages.
 Member profiles do not expose these connector tools.
+
+### Skills
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `set_skill_active` | Set a skill active or inactive (reads current state before using Open WebUI's toggle endpoint) | Skill owner or write access |
+| `delete_skill` | Delete a skill | Skill owner or write access |
+
+`delete_skill` is the sole delete operation exposed in local and admin profiles;
+it is unavailable to the member profile.
 
 ### Knowledge Base Management
 | Tool | Description | Permission |

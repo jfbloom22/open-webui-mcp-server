@@ -733,6 +733,14 @@ class FunctionUpdateParam(BaseModel):
     content: Optional[str] = Field(default=None, description="New code")
 
 
+class SkillIdParam(BaseModel):
+    skill_id: str = Field(description="Skill ID")
+
+
+class SkillActiveParam(SkillIdParam):
+    is_active: bool = Field(description="Whether the skill should be active")
+
+
 class NoteCreateParam(BaseModel):
     title: str = Field(description="Note title")
     content: str = Field(description="Note content (markdown supported)")
@@ -1713,6 +1721,18 @@ async def delete_function(params: FunctionIdParam, ctx: Context) -> dict[str, An
 
 
 @mcp.tool()
+async def delete_skill(params: SkillIdParam, ctx: Context) -> bool:
+    """Delete a skill that you own or can write. ADMIN / LOCAL ONLY."""
+    return await get_client().delete_skill(params.skill_id, get_user_token())
+
+
+@mcp.tool()
+async def set_skill_active(params: SkillActiveParam, ctx: Context) -> dict[str, Any]:
+    """Set a skill active or inactive. ADMIN / LOCAL ONLY."""
+    return await get_client().set_skill_active(params.skill_id, params.is_active, get_user_token())
+
+
+@mcp.tool()
 async def list_notes(ctx: Context) -> dict[str, Any]:
     """List all your notes."""
     return await get_client().list_notes(get_user_token())
@@ -1965,7 +1985,7 @@ async def configure_tools() -> None:
         MEMBER_PROFILE_TOOLS & registered_tools if profile == "member" else registered_tools
     )
     disallowed_tools = (
-        {name for name in registered_tools if name.startswith("delete_")}
+        {name for name in registered_tools if name.startswith("delete_") and name != "delete_skill"}
         | additional_disabled
         | (registered_tools - allowed_tools)
     )

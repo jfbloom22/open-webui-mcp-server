@@ -386,6 +386,20 @@ class OpenWebUIClient:
         """Get the current session profile without exposing bearer tokens."""
         return sanitize_current_user(await self.get("/api/v1/auths/", api_key))
 
+    async def delete_skill(self, skill_id: str, api_key: Optional[str] = None) -> dict:
+        """Delete a skill the caller can write."""
+        return await self.delete(f"/api/v1/skills/id/{self._path_id(skill_id)}/delete", api_key)
+
+    async def set_skill_active(
+        self, skill_id: str, is_active: bool, api_key: Optional[str] = None
+    ) -> dict:
+        """Set skill activation state using Open WebUI's toggle route idempotently."""
+        path = f"/api/v1/skills/id/{self._path_id(skill_id)}"
+        current = await self.get(path, api_key)
+        if current.get("is_active") is is_active:
+            return current
+        return await self.post(f"{path}/toggle", api_key)
+
     async def update_user_role(
         self, user_id: str, role: str, api_key: Optional[str] = None
     ) -> dict:

@@ -37,6 +37,7 @@
   omission-preserving updates and merge-by-key semantics for object fields.
 - `get_file_content` accepts optional `knowledge_id` and verifies file linkage
   server-side before returning extracted text.
+- Added admin/local `delete_skill` and permission-scoped `set_skill_active`.
 
 ### Changed
 
